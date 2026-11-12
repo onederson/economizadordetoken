@@ -1,0 +1,171 @@
+# Catalogo de executores do maestro.
+# cota: de qual "bolso" o executor gasta. O orquestrador evita gastar o proprio bolso caro.
+# custo: barato | medio | caro (relativo, dentro do bolso).
+# poupar = true: so use se o usuario pedir ou se os baratos falharem 2 vezes.
+# privado = false: provedor pode registrar o que recebe; nada com segredo.
+#
+# Ordem de gasto definida pelo usuario: 1) OmniRoute  2) agy  3) Claude Code.
+# "--exec auto" usa a rota do --tipo abaixo: tenta o primeiro, e se a cota acabar passa ao proximo.
+#
+# nivel: o que o modelo aguenta. 1 ler/coletar/mecanico | 2 implementar com especificacao fechada |
+#        3 implementacao delicada, depuracao, revisao | 4 arquitetura, causa raiz, decisao.
+# Quem orquestra informa --eu (id ou nivel): "run" so desce para nivel igual ou menor, "consultar" sobe
+# para o mais barato acima, na ordem de bolsos abaixo. Sessoes fora do catalogo: Fable/Opus = 4.
+
+bolsos = ["omniroute", "google", "anthropic"]
+
+[rotas]
+implementar = ["omni-free-code", "agy-flash-high", "cc-haiku"]
+pequena     = ["omni-free-fast", "omni-free-code", "agy-flash-medium", "cc-haiku"]
+testes      = ["omni-free-code", "agy-flash-high", "cc-haiku"]
+refatorar   = ["omni-free-code", "agy-flash-high", "cc-haiku"]
+docs        = ["omni-free-fast", "omni-free-code", "agy-flash-medium", "cc-haiku"]
+ler         = ["omni-free-fast", "omni-free-code", "agy-flash-low", "cc-haiku"]
+pesquisar   = ["omni-free-code", "agy-flash-medium", "cc-haiku"]
+dificil     = ["omni-credit-strong", "agy-argon-high", "agy-opus", "cc-sonnet"]
+
+[agy-flash-high]
+cli = "agy"
+modelo = "gemini-3.8-flash-high"
+cota = "google"
+custo = "barato"
+nivel = 2
+privado = true
+forte = "implementacao com especificacao fechada, codigo bracal, testes, porte de codigo"
+fraco = "diz 'aprovado' mesmo com verificacao falhando; precisa de arquivos e funcoes nomeados"
+
+[agy-flash-medium]
+cli = "agy"
+modelo = "gemini-3.8-flash-medium"
+cota = "google"
+custo = "barato"
+nivel = 2
+privado = true
+forte = "tarefas pequenas, edicoes em lote, scripts, documentacao"
+fraco = "mesmo do flash-high, raciocina menos"
+
+[agy-flash-low]
+cli = "agy"
+modelo = "gemini-3.8-flash-low"
+cota = "google"
+custo = "barato"
+nivel = 1
+privado = true
+forte = "leitura, resumo de arquivo/log, extracao de fatos"
+fraco = "nao use para codigo nao trivial"
+
+[agy-gpt-oss]
+cli = "agy"
+modelo = "gpt-oss-120b-medium"
+cota = "google"
+custo = "barato"
+nivel = 2
+privado = true
+forte = "segunda opiniao barata, tarefas simples quando o flash travar"
+fraco = "menos testado aqui"
+
+[agy-argon-high]
+cli = "agy"
+modelo = "gemini-4-argon-high"
+cota = "google"
+custo = "caro"
+nivel = 3
+poupar = true
+privado = true
+forte = "tarefa dificil delegada, depuracao com muito contexto"
+fraco = "cota pequena; ja acabou uma vez (volta em ~5 dias)"
+
+[agy-sonnet]
+cli = "agy"
+modelo = "claude-sonnet-5-5-medium"
+cota = "google"
+custo = "caro"
+nivel = 3
+poupar = true
+privado = true
+forte = "implementacao delicada quando o flash falhou 2 vezes"
+fraco = "gasta a cota cara do agy"
+
+[agy-opus]
+cli = "agy"
+modelo = "claude-opus-5-5-high"
+cota = "google"
+custo = "caro"
+nivel = 4
+poupar = true
+privado = true
+forte = "o mais forte disponivel no agy; ultimo recurso para tarefa delegada muito dificil"
+fraco = "gasta a cota cara do agy"
+
+[cc-haiku]
+cli = "claude"
+modelo = "haiku"
+cota = "anthropic"
+custo = "barato"
+nivel = 2
+privado = true
+forte = "leitura, busca, logs, tarefas mecanicas, testes; obedece bem a instrucoes"
+fraco = "decisoes de design"
+
+[cc-sonnet]
+cli = "claude"
+modelo = "sonnet"
+cota = "anthropic"
+custo = "caro"
+nivel = 3
+poupar = true
+privado = true
+forte = "implementacao com especificacao fechada, muito confiavel"
+fraco = "gasta a cota cara do Claude"
+
+[cc-opus]
+cli = "claude"
+modelo = "opus"
+cota = "anthropic"
+custo = "caro"
+nivel = 4
+poupar = true
+privado = true
+forte = "decisao de arquitetura e causa raiz quando um Sonnet precisa consultar acima"
+fraco = "o mais caro do Claude; so para consulta curta"
+
+[omni-free-code]
+cli = "opencode"
+modelo = "omniroute/free-code"
+cota = "omniroute"
+custo = "barato"
+nivel = 2
+privado = false
+forte = "implementacao nao sensivel, gratis"
+fraco = "provedores gratuitos podem registrar; limites diarios; qualidade varia"
+
+[omni-free-fast]
+cli = "opencode"
+modelo = "omniroute/free-fast"
+cota = "omniroute"
+custo = "barato"
+nivel = 1
+privado = false
+forte = "tarefas pequenas nao sensiveis"
+fraco = "idem free-code"
+
+[omni-free-safe]
+cli = "opencode"
+modelo = "omniroute/free-safe"
+cota = "omniroute"
+custo = "barato"
+nivel = 2
+privado = false
+forte = "provedores mais conhecidos; melhor opcao gratis para codigo de cliente sem segredos"
+fraco = "ainda e externo"
+
+[omni-credit-strong]
+cli = "opencode"
+modelo = "omniroute/credit-strong"
+cota = "omniroute"
+custo = "medio"
+nivel = 3
+poupar = true
+privado = false
+forte = "tarefa dificil sem gastar agy/Claude (Kimi, GLM, DeepSeek Pro); gasta credito de cadastro"
+fraco = "credito acaba; provedores externos"
