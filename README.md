@@ -2,7 +2,7 @@
 
 > Cada parte da tarefa vai para o **menor modelo que da conta**. O modelo caro pensa, os baratos digitam.
 
-O **maestro** e um orquestrador de modelos de linguagem para quem trabalha com agentes de codigo no terminal (Claude Code, Antigravity CLI/agy, opencode, Gemini CLI, Codex...). Ele divide o trabalho entre modelos de varias empresas e varios precos para que os modelos caros (Opus, Fable, Sonnet, Gemini Argon) gastem token so com o que exige inteligencia: entender, decidir, especificar e conferir. Ler muito, tentar, errar e repetir vai para modelos gratuitos ou baratos.
+O **maestro** e um orquestrador de modelos de linguagem para quem trabalha com agentes de codigo no terminal (Claude Code, Antigravity CLI/agy, opencode, Gemini CLI, Codex...). Ele divide o trabalho entre modelos de varias empresas e varios precos para que os modelos caros (Opus, Fable, Sonnet, Gemini Argon/Carbon) gastem token so com o que exige inteligencia: entender, decidir, especificar e conferir. Ler muito, tentar, errar e repetir vai para modelos gratuitos ou baratos.
 
 Sao dois pecas:
 
@@ -84,9 +84,9 @@ Todo modelo do catalogo tem um **nivel** de 1 a 4:
 
 | Nivel | Aguenta | Exemplos |
 |---|---|---|
-| **4** | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, GPT de topo |
-| **3** | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Gemini Argon, Gemini Pro, Kimi/GLM/DeepSeek grandes |
-| **2** | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, OmniRoute free-code |
+| **4** | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, Gemini 4 Carbon, GPT de topo |
+| **3** | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Argon, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
+| **2** | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, Gemini 4 Hydrogen medium/low, free-code, modelos 'mini' |
 | **1** | ler, coletar, extrair fatos, edicao mecanica | Flash low/lite, OmniRoute free-fast |
 
 O modelo que esta orquestrando informa quem e com `--eu` (o nivel, ou o seu id no catalogo). Para cada parte da tarefa ele pergunta: **qual e o menor nivel que resolve isto?**
@@ -112,7 +112,7 @@ Assim o esquema funciona com **qualquer** modelo no comando: um Opus desce quase
 | CLI | Usado para | Observacao |
 |---|---|---|
 | `opencode` | modelos do **OmniRoute** (gratis e por credito) | precisa do provedor `omniroute` e dos agentes `worker` e `leitor` configurados (exemplo abaixo) |
-| `agy` | Gemini Flash/Argon e Claude dentro do Antigravity | usa a cota Google |
+| `agy` | Gemini Flash/Hydrogen/Argon e Claude dentro do Antigravity (testado no agy 1.5.9) | usa a cota Google |
 | `claude` | Haiku, Sonnet, Opus | usa a sua assinatura do Claude Code |
 
 ### Agentes do opencode
@@ -182,10 +182,10 @@ Abaixo, `maestro` = `python ~/.maestro/maestro.py`.
 ```
 $ maestro rota --eu cc-haiku
 voce: nivel 2
-  descer/igual  run --tipo implementar  omni-free-code[2] > agy-flash-high[2] > cc-haiku[2]
+  descer/igual  run --tipo implementar  omni-free-code[2] > agy-flash-high[2] > agy-hydrogen-medium[2] > cc-haiku[2]
   descer/igual  run --tipo ler          omni-free-fast[1] > omni-free-code[2] > agy-flash-low[1] > cc-haiku[2]
   ...
-  subir         consultar              omni-credit-strong[3] > agy-argon-high[3] > agy-sonnet[3] > cc-sonnet[3] > agy-opus[4] > cc-opus[4]
+  subir         consultar              omni-credit-strong[3] > agy-hydrogen-high[3] > agy-hydrogen-xhigh[3] > agy-argon-high[3] > agy-sonnet[3] > cc-sonnet[3] > agy-opus[4] > cc-opus[4]
 ```
 
 Executores com cota esgotada aparecem com `(X)`.
@@ -366,9 +366,9 @@ O consultor roda em modo so leitura e responde em ate 25 linhas: **DECISAO, MOTI
 bolsos = ["omniroute", "google", "anthropic"]   # ordem de gasto
 
 [rotas]
-implementar = ["omni-free-code", "agy-flash-high", "cc-haiku"]
+implementar = ["omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
 ler         = ["omni-free-fast", "omni-free-code", "agy-flash-low", "cc-haiku"]
-dificil     = ["omni-credit-strong", "agy-argon-high", "agy-opus", "cc-sonnet"]
+dificil     = ["omni-credit-strong", "agy-hydrogen-high", "agy-argon-high", "agy-opus", "cc-sonnet"]
 # ... pequena, testes, refatorar, docs, pesquisar
 
 [agy-flash-high]
@@ -395,6 +395,9 @@ Executores que vem no catalogo:
 | `agy-flash-medium` | agy | 2 | google | |
 | `agy-flash-high` | agy | 2 | google | |
 | `agy-gpt-oss` | agy | 2 | google | |
+| `agy-hydrogen-medium` | agy | 2 | google | |
+| `agy-hydrogen-high` | agy | 3 | google | |
+| `agy-hydrogen-xhigh` | agy | 3 | google | poupar |
 | `agy-argon-high` | agy | 3 | google | poupar |
 | `agy-sonnet` | agy | 3 | google | poupar |
 | `agy-opus` | agy | 4 | google | poupar |
@@ -421,6 +424,7 @@ Economizar token cortando informacao e facil; o dificil e cortar **sem** que o o
 | **Avisos antes de gastar** | `run` avisa quando a tarefa sai sem arquivo citado, sem `--verificar` ou pequena demais para valer a delegacao; `consultar` avisa quando a pergunta e vaga | aviso nao bloqueia |
 | **Sessao reaproveitada** | `--continuar` retoma a sessao do executor em vez de abrir outra que releria tudo | |
 | **Executor Claude enxuto** | o Haiku/Sonnet roda com `--strict-mcp-config --disable-slash-commands` (sem servidores MCP e sem skills) | numa leitura simples, a entrada caiu de ~100-157 mil para ~60 mil tokens (tarefas diferentes, comparacao aproximada) |
+| **Executor agy enxuto** | o agy roda com `--disable-slash-commands` (sem expansao de skills e comandos) e o raciocinio (`thinking_tokens`) entra na conta de saida do executor no `ganho` | o modo padrao do `agy -p` virou Auto no 1.5.7; a autonomia continua explicita com `--dangerously-skip-permissions` |
 | **Sem cascata** | o executor nao pode delegar de novo: `maestro run`/`consultar` recusam rodar dentro de um executor (`MAESTRO_EU` definido) | |
 | **Medicao** | `maestro ganho` mostra tokens por executor, quanto voltou ao orquestrador (estimado em caracteres/4) e onde se perdeu | |
 
@@ -459,6 +463,7 @@ onde se perdeu:
 
 - **Cache de respostas repetidas:** uma leitura de log mudaria sem o cache perceber, e resposta velha e exatamente o "ficar burro". O `ganho` so conta repeticoes.
 - **Compressao por modelo de ML / proxy na frente da API:** pesado e redundante com o rtk.
+- **Passar a saida da verificacao pelo `rtk pipe`:** testado em 2026-11-14 com o rtk 1.2.0: com o pytest ausente, a saida "No module named pytest" virou "Pytest: No tests collected", escondendo o erro real. O `enxugar` do maestro preserva as linhas de erro, entao fica ele.
 
 ---
 
@@ -531,3 +536,4 @@ O `historico.jsonl` alimenta `sugerir` e `ganho`. Cada `run` registra executor, 
 
 - [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom): compressao reversivel (o original fica guardado e recuperavel), preservar erros e valores fora do padrao, nao tocar no que o usuario escreveu, pular o que e curto.
 - [rtk-ai/rtk](https://github.com/rtk-ai/rtk): filtrar saida de comando antes de entrar no contexto, mostrar so falhas de teste, nunca imprimir mais que o original, falhar aberto, indicar como recuperar a saida completa, medir o ganho (`rtk gain`).
+Revisado em 2026-11-14 (headroom no commit `fda75de`, rtk 1.2.0): as ideias novas (Output Shaper, CacheAligner, pipelines/tasks do rtk) dependem de proxy na frente da API ou de filtros que podem esconder erro; nada foi incorporado alem do que esta acima.

@@ -151,12 +151,14 @@ def ambiente(env, pasta, eid):
 
 
 def acima(n, cat, sensivel=False, minimo=None):
-    """Executores de nivel maior que n: o mais baixo que resolve primeiro, e dentro do nivel a ordem de gasto."""
+    """Executores de nivel maior que n: o mais baixo que resolve primeiro, dentro do nivel a ordem de gasto,
+    e dentro do bolso o mais barato (custo) antes do caro."""
     bolsos = ler_catalogo().get("bolsos", BOLSOS)
     pos = lambda b: bolsos.index(b) if b in bolsos else len(bolsos)
+    preco = {"barato": 0, "medio": 1, "caro": 2}
     piso = max(n + 1, minimo or 0)
     ids = [e for e, ex in cat.items() if nivel(ex) >= piso and (ex.get("privado", True) or not sensivel)]
-    return sorted(ids, key=lambda e: (nivel(cat[e]), pos(cat[e]["cota"])))
+    return sorted(ids, key=lambda e: (nivel(cat[e]), pos(cat[e]["cota"]), preco.get(cat[e].get("custo"), 1)))
 
 
 def resolver(spec, tipo, cat, sensivel=False, teto=None):
@@ -312,8 +314,10 @@ def montar(ex, prompt, sessao, timeout, leitura=False):
         if sessao:
             cmd += ["--resume", sessao]
     elif cli == "agy":
+        # --disable-slash-commands: sem expansao de skills/comandos no executor (agy >= 1.5); o modo padrao do
+        # -p virou Auto no 1.5.7, por isso a autonomia vem explicita do --dangerously-skip-permissions
         cmd = [exe, "-p", prompt, "--model", modelo, "--output-format", "json",
-               "--dangerously-skip-permissions", "--print-timeout", f"{timeout}s"]
+               "--dangerously-skip-permissions", "--disable-slash-commands", "--print-timeout", f"{timeout}s"]
         if leitura:
             cmd += ["--mode", "plan"]
         if sessao:
@@ -346,7 +350,9 @@ def interpretar(cli, bruto):
             erro = dados.get("result") if dados.get("is_error") else None
             return dados.get("session_id"), dados.get("result") or "", tin, u.get("output_tokens") or 0, erro
         erro = None if dados.get("status") == "SUCCESS" else (dados.get("error") or dados.get("status"))
-        return dados.get("conversation_id"), dados.get("response") or "", u.get("input_tokens") or 0, u.get("output_tokens") or 0, erro
+        # agy separa o raciocinio em thinking_tokens; conta como saida do executor (e o que ele gastou)
+        tout = (u.get("output_tokens") or 0) + (u.get("thinking_tokens") or 0)
+        return dados.get("conversation_id"), dados.get("response") or "", u.get("input_tokens") or 0, tout, erro
     sessao, textos, erros, tin, tout = None, [], [], 0, 0
     for linha in bruto.splitlines():
         try:

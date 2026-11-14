@@ -15,14 +15,14 @@
 bolsos = ["omniroute", "google", "anthropic"]
 
 [rotas]
-implementar = ["omni-free-code", "agy-flash-high", "cc-haiku"]
+implementar = ["omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
 pequena     = ["omni-free-fast", "omni-free-code", "agy-flash-medium", "cc-haiku"]
-testes      = ["omni-free-code", "agy-flash-high", "cc-haiku"]
-refatorar   = ["omni-free-code", "agy-flash-high", "cc-haiku"]
+testes      = ["omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
+refatorar   = ["omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
 docs        = ["omni-free-fast", "omni-free-code", "agy-flash-medium", "cc-haiku"]
 ler         = ["omni-free-fast", "omni-free-code", "agy-flash-low", "cc-haiku"]
 pesquisar   = ["omni-free-code", "agy-flash-medium", "cc-haiku"]
-dificil     = ["omni-credit-strong", "agy-argon-high", "agy-opus", "cc-sonnet"]
+dificil     = ["omni-credit-strong", "agy-hydrogen-high", "agy-argon-high", "agy-opus", "cc-sonnet"]
 
 [agy-flash-high]
 cli = "agy"
@@ -64,6 +64,39 @@ privado = true
 forte = "segunda opiniao barata, tarefas simples quando o flash travar"
 fraco = "menos testado aqui"
 
+# Gemini 4 Hydrogen (agy >= 1.5.8): camada rapida do Gemini 4, derivada do Carbon; no "high" passa o Argon em
+# parte dos benchmarks e custa menos. Contexto de 1M. Cota propria no agy (esgota separado do Flash).
+[agy-hydrogen-medium]
+cli = "agy"
+modelo = "gemini-4-hydrogen-medium"
+cota = "google"
+custo = "medio"
+nivel = 2
+privado = true
+forte = "implementacao com especificacao fechada quando o flash erra ou esta sem cota; contexto grande (1M)"
+fraco = "mais caro que o flash; novo aqui, sem historico de acerto ainda"
+
+[agy-hydrogen-high]
+cli = "agy"
+modelo = "gemini-4-hydrogen-high"
+cota = "google"
+custo = "medio"
+nivel = 3
+privado = true
+forte = "tarefa dificil delegada e consulta de nivel 3 sem gastar Argon/Sonnet/Opus; depuracao com muito contexto"
+fraco = "novo aqui, sem historico de acerto ainda"
+
+[agy-hydrogen-xhigh]
+cli = "agy"
+modelo = "gemini-4-hydrogen-xhigh"
+cota = "google"
+custo = "medio"
+nivel = 3
+poupar = true
+privado = true
+forte = "depuracao pesada quando o hydrogen-high nao resolveu"
+fraco = "raciocina muito: lento e gasta mais cota que o high"
+
 [agy-argon-high]
 cli = "agy"
 modelo = "gemini-4-argon-high"
@@ -73,7 +106,7 @@ nivel = 3
 poupar = true
 privado = true
 forte = "tarefa dificil delegada, depuracao com muito contexto"
-fraco = "cota pequena; ja acabou uma vez (volta em ~5 dias)"
+fraco = "cota pequena; ja acabou uma vez (volta em ~5 dias); prefira o agy-hydrogen-high antes"
 
 [agy-sonnet]
 cli = "agy"

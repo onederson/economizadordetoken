@@ -15,9 +15,9 @@ Ferramenta: `python ~/.maestro/maestro.py` (abaixo, `maestro`), rodada pelo seu 
 
 | Nivel | Aguenta | Modelos |
 |---|---|---|
-| 4 | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, GPT de topo |
-| 3 | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Argon, Gemini Pro, Kimi/GLM/DeepSeek grandes |
-| 2 | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, free-code, modelos "mini" |
+| 4 | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, Gemini 4 Carbon, GPT de topo |
+| 3 | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Argon, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
+| 2 | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, Gemini 4 Hydrogen medium/low, free-code, modelos "mini" |
 | 1 | ler, coletar, extrair fatos, edicao mecanica | Flash low/lite, free-fast, modelos "nano" |
 
 Passe o seu nivel em `--eu` (o numero, ou o seu id do catalogo, ex.: `--eu cc-haiku`). Se o seu modelo nao esta na tabela, compare pelo nome (pro/sonnet = 3, flash/haiku/mini = 2) e, na duvida, use 2. Antes da primeira chamada da sessao rode `maestro rota --eu <voce>`: mostra, sem gastar nada, quem esta abaixo ou igual a voce, quem esta acima e o que esta esgotado.
@@ -85,7 +85,7 @@ A pergunta precisa se bastar, porque o modelo maior nao viu a sua conversa: o qu
 | Implementar, testes, refatorar | `maestro run --eu <voce> --tipo implementar ...` |
 | Tarefa pequena, docs | `--tipo pequena` / `--tipo docs` |
 | Codigo com segredo ou de cliente | acrescente `--sensivel` (pula o OmniRoute, comeca no agy) |
-| Execucao que exige mais que voce | `--tipo dificil` (credit-strong > Argon > Opus no agy > Sonnet); avise o usuario em uma linha |
+| Execucao que exige mais que voce | `--tipo dificil` (credit-strong > Hydrogen high > Argon > Opus no agy > Sonnet); avise o usuario em uma linha |
 
 - `--exec a,b,c` forca uma lista propria; use so com motivo (ex.: `maestro sugerir <tipo>` mostra que um executor erra muito nesse tipo).
 - Nunca coloque segredos (chaves, senhas, tokens) em nenhuma tarefa nem consulta.
