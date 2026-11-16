@@ -163,6 +163,49 @@ def acima(n, cat, sensivel=False, minimo=None):
     return sorted(ids, key=lambda e: (nivel(cat[e]), pos(cat[e]["cota"]), preco.get(cat[e].get("custo"), 1)))
 
 
+ACERTO_MIN = 0.5      # abaixo disso o executor vai para o fim da rota daquele tipo
+ACERTO_AMOSTRA = 5    # jobs encerrados antes de julgar alguem
+ACERTO_DIAS = 30      # so o recente conta, para um executor rebaixado poder voltar quando o historico envelhece
+GRATIS = ("local", "omniroute")
+
+
+def acerto(tipo, dias=ACERTO_DIAS):
+    """{executor: [juntados, encerrados]} dos jobs deste tipo encerrados nos ultimos `dias`."""
+    tipo = tipo or "implementar"
+    desde = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - dias * 86400))
+    placar = collections.defaultdict(lambda: [0, 0])
+    try:
+        with open(HISTORICO, encoding="utf-8") as f:
+            for linha in f:
+                try:
+                    e = json.loads(linha)
+                except ValueError:
+                    continue
+                if (e.get("evento") in ("juntar", "descartar") and (e.get("tipo") or "implementar") == tipo
+                        and e.get("data", "") >= desde):
+                    p = placar[e.get("exec")]
+                    p[0] += e["evento"] == "juntar"
+                    p[1] += 1
+    except OSError:
+        pass
+    return placar
+
+
+def ordenar_por_acerto(lista, tipo):
+    """Quem teve menos da metade dos jobs juntados (com amostra suficiente) vai para o fim da rota, na mesma
+    ordem. Nao sai da lista: fica de reserva se os outros estiverem sem cota. Token gratis que vira descarte
+    custa token caro de quem revisa e reescreve a tarefa."""
+    placar = acerto(tipo)
+    fracos = [e for e in lista if placar.get(e, [0, 0])[1] >= ACERTO_AMOSTRA
+              and placar[e][0] / placar[e][1] < ACERTO_MIN]
+    if not fracos or len(fracos) == len(lista):
+        return lista
+    for e in fracos:
+        print(f"rota: {e} vai para o fim ({placar[e][0]}/{placar[e][1]} jobs juntados em "
+              f"'{tipo or 'implementar'}' nos ultimos {ACERTO_DIAS} dias)")
+    return [e for e in lista if e not in fracos] + fracos
+
+
 def resolver(spec, tipo, cat, sensivel=False, teto=None):
     """'auto' ou 'a,b,c' -> lista de executores, ja sem os externos se sensivel.
     teto: nivel de quem chama. Na rota automatica so fica quem e igual ou menor; a rota 'dificil' e a
@@ -185,7 +228,7 @@ def resolver(spec, tipo, cat, sensivel=False, teto=None):
                      "'maestro.py consultar' (duvida) ou '--tipo dificil' (execucao)")
     if not lista:
         sys.exit("nenhum executor na rota")
-    return lista
+    return ordenar_por_acerto(lista, tipo) if auto else lista
 
 
 def esgotados():
@@ -640,6 +683,27 @@ def cmd_catalogo(a):
         print(f"  {tipo:12} " + " > ".join(e + ("(X)" if e in esg else "") for e in lista))
 
 
+def correcao(j, execs, cat, pedido, auto):
+    """Texto e executores da rodada de correcao. Se um executor gratis falhou na rodada anterior, ele nao
+    tenta de novo: a correcao vai para o proximo da rota, que recebe a tarefa original porque nao tem a
+    sessao de quem comecou. Executor pago segue na mesma sessao, que ja tem o contexto."""
+    anterior, falhou = j.get("exec_usado"), j.get("falhou")
+    if not (auto and falhou and anterior in execs and len(execs) > 1
+            and cat.get(anterior, {}).get("cota") in GRATIS):
+        return execs, (f"# Correcao (rodada {j['rodada']})\n\nA tarefa anterior esta quase pronta. "
+                       f"Corrija somente isto:\n\n{pedido}\n")
+    execs = [e for e in execs if e != anterior] + [anterior]
+    print(f"{anterior} falhou na rodada anterior ({falhou}); a correcao vai para o proximo da rota")
+    try:
+        with open(os.path.join(job_dir(j["job"]), "tarefa-r1.md"), encoding="utf-8") as f:
+            original = f.read()
+    except OSError:
+        original = "(tarefa original indisponivel; deduza pelo trabalho parcial e pela correcao)"
+    return execs, (f"{original}\n\n# Situacao (rodada {j['rodada']})\n\nOutro modelo comecou esta tarefa e o "
+                   f"resultado falhou ({falhou}). O trabalho parcial dele esta neste worktree: aproveite o que "
+                   f"estiver certo e termine a tarefa acima. Corrija tambem isto:\n\n{pedido}\n")
+
+
 def cmd_run(a):
     cat = catalogo()
     if a.leitura:
@@ -652,8 +716,8 @@ def cmd_run(a):
         texto = a.texto or (open(a.tarefa, encoding="utf-8").read() if a.tarefa else None)
         if not texto:
             sys.exit("informe a correcao")
-        texto = f"# Correcao (rodada {j['rodada']})\n\nA tarefa anterior esta quase pronta. Corrija somente isto:\n\n{texto}\n"
         execs = resolver(a.exec if a.exec != "auto" else j["exec"], j.get("tipo"), cat, a.sensivel or j.get("sensivel"))
+        execs, texto = correcao(j, execs, cat, texto, a.exec == "auto")
         if a.verificar:
             j["verificar"] = a.verificar
         avisos = []
@@ -730,6 +794,7 @@ def cmd_run(a):
         mudancas(j)  # limpa o que a verificacao possa ter deixado no indice
         if not verif["ok"] and codigo == 0:
             codigo = 3
+    j["falhou"] = status if status in ("ERRO", "TIMEOUT") else ("verificacao" if verif and not verif["ok"] else None)
     salvar_job(j)
     seg = round(time.time() - inicio)
 
@@ -826,7 +891,7 @@ def cmd_rota(a):
     for tipo in ([a.tipo] if a.tipo else [t for t in rotas if t != "dificil"]):
         ids = [e for e in rotas.get(tipo, []) if e in cat and nivel(cat[e]) <= n
                and (cat[e].get("privado", True) or not a.sensivel)]
-        print(f"  descer/igual  run --tipo {tipo:12} {marca(ids)}")
+        print(f"  descer/igual  run --tipo {tipo:12} {marca(ordenar_por_acerto(ids, tipo))}")
     print(f"  subir         consultar              {marca(acima(n, cat, a.sensivel))}")
 
 
@@ -915,8 +980,37 @@ def cmd_sugerir(a):
         print(f"{tipo:12} {eid:18} {len(lst):>7} {pct(ver):>8} {pct(primeira):>6} {pct(junt):>8} {sum(e['segundos'] for e in lst) // len(lst):>7}")
 
 
+def economia(ev, cat, periodo):
+    """Resumo do que saiu do orquestrador: tokens que os executores gastaram em trabalho aproveitado,
+    menos o que o orquestrador pagou para mandar a tarefa e ler a resposta (caracteres/4).
+    Consultas acima nao entram: sao gasto extra, nao economia."""
+    finais = {e["job"]: e["evento"] for e in ev if e.get("evento") in ("juntar", "descartar")}
+    fora = perdido = custo = gratis = 0
+    for e in ev:
+        if e.get("evento") not in ("run", "leitura"):
+            continue
+        t = (e.get("tokens_in") or 0) + (e.get("tokens_out") or 0)
+        custo += ((e.get("tarefa_c") or e.get("pedido_c") or 0) + (e.get("devolvido_c", e.get("resposta_c")) or 0)) // 4
+        if e.get("evento") == "run" and finais.get(e.get("job")) == "descartar":
+            perdido += t
+            continue
+        fora += t
+        if cat.get(e.get("exec"), {}).get("cota") in ("local", "omniroute"):
+            gratis += t
+    liquido = fora - custo
+    print(f"ECONOMIA ({periodo})")
+    print(f"  tokens que nao passaram pelo orquestrador: {liquido:,}".replace(",", "."))
+    print(f"    = {fora:,} feitos pelos executores em trabalho aproveitado".replace(",", ".")
+          + f" ({gratis:,} em modelo gratis: local/omniroute)".replace(",", "."))
+    print(f"    - {custo:,} que o orquestrador gastou mandando tarefas e lendo respostas".replace(",", "."))
+    if perdido:
+        print(f"  fora da conta: {perdido:,} tokens de executor em jobs descartados".replace(",", "."))
+    print("  teto: o executor rele o contexto a cada turno; o orquestrador faria o mesmo trabalho com menos tokens que isso.")
+    print()
+
+
 def cmd_ganho(a):
-    desde = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - a.dias * 86400))
+    desde = "" if a.dias <= 0 else time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - a.dias * 86400))
     ev = []
     try:
         with open(HISTORICO, encoding="utf-8") as f:
@@ -934,6 +1028,7 @@ def cmd_ganho(a):
         print("sem historico no periodo")
         return
     cat = catalogo()
+    economia(ev, cat, "todo o historico" if a.dias <= 0 else f"ultimos {a.dias:g} dias")
     por = collections.defaultdict(lambda: [0, 0, 0, 0, 0])  # chamadas, tokens in, tokens out, voltou (c), medidas
     for e in cham:
         p = por[e["exec"]]
@@ -944,7 +1039,7 @@ def cmd_ganho(a):
         if c is not None:
             p[3] += c
             p[4] += (e.get("tokens_in") or 0) + (e.get("tokens_out") or 0)
-    print(f"ultimos {a.dias:g} dias. 'voltou' = o que entrou no contexto de quem orquestra, estimado como caracteres/4.")
+    print(f"por executor. 'voltou' = o que entrou no contexto de quem orquestra, estimado como caracteres/4.")
     print(f"{'executor':18} {'bolso':10} {'chamadas':>8} {'tokens in':>11} {'tokens out':>10} {'voltou':>8}")
     for eid, p in sorted(por.items(), key=lambda kv: -kv[1][1]):
         print(f"{eid:18} {cat.get(eid, {}).get('cota', '?'):10} {p[0]:>8} {p[1]:>11} {p[2]:>10} {p[3] // 4:>8}")
@@ -1040,7 +1135,7 @@ def main():
     s = sub.add_parser("sugerir")
     s.add_argument("tipo", nargs="?")
     g = sub.add_parser("ganho", help="tokens processados pelos executores, o que voltou e onde se perdeu")
-    g.add_argument("--dias", type=float, default=30)
+    g.add_argument("--dias", type=float, default=30, help="0 = todo o historico")
     a = p.parse_args()
     if a.cmd in ("run", "consultar") and profundidade() >= 1:
         sys.exit("voce foi lancado pelo maestro (MAESTRO_EU definido): executor nao delega nem consulta. "

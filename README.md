@@ -268,6 +268,7 @@ Comando(s) e resultado esperado.
 
 - **`--verificar` substitui o "aprovado" do executor.** Modelos baratos as vezes dizem que testaram sem testar; o exit code nao mente.
 - **`--continuar` reaproveita a sessao** do executor (`--resume` no Claude, `--conversation` no agy, `--session` no opencode): ele nao rele o projeto do zero. Testado nos tres CLIs.
+- **Gratis que falhou cede a correcao.** Com `--exec auto`, se a rodada anterior de um executor gratis (local/omniroute) deu `ERRO`, `TIMEOUT` ou verificacao reprovada, o `--continuar` manda a correcao para o proximo da rota, junto com a tarefa original (ele nao tem a sessao de quem comecou) e o trabalho parcial no worktree. Executor pago que falhou segue na mesma sessao.
 - **Fallback de cota:** se o executor responde com erro de cota (429, `quota`, `rate limit`, `insufficient credit`...), o maestro marca ele como esgotado por `--horas-cota` horas (padrao 5) e tenta o proximo da lista, sozinho.
 - **Jobs paralelos** sao seguros (cada um tem seu worktree); so evite dois jobs mexendo no mesmo arquivo, porque a juntada do segundo pode conflitar (o maestro tenta `git apply --3way` antes de desistir).
 - **Maximo recomendado: 3 rodadas.** Depois disso, quem orquestra corrige direto no worktree e junta, consulta acima ou descarta.
@@ -311,7 +312,7 @@ O que acontece depende de quem chamou:
 | `maestro jobs` | jobs com worktree aberto |
 | `maestro cota ID --horas 120` / `--liberar` | marcar ou liberar cota esgotada manualmente |
 | `maestro sugerir [tipo]` | taxa de acerto por executor e tipo (verificacao OK, OK de primeira, juntado) |
-| `maestro ganho [--dias 30]` | tokens processados pelos executores, quanto voltou ao orquestrador, onde se perdeu |
+| `maestro ganho [--dias 30]` | resumo da economia (tokens que nao passaram pelo orquestrador, ja descontado o custo de mandar a tarefa e ler a resposta), tokens por executor, quanto voltou, onde se perdeu. `--dias 0` = todo o historico |
 
 ### `run`
 
@@ -425,6 +426,7 @@ Economizar token cortando informacao e facil; o dificil e cortar **sem** que o o
 | **Resposta longa guardada** | leitura ou consulta acima do limite volta com inicio + fim + caminho do texto completo | nada se perde: o completo fica em `~/.maestro/respostas/` |
 | **Avisos antes de gastar** | `run` avisa quando a tarefa sai sem arquivo citado, sem `--verificar` ou pequena demais para valer a delegacao; `consultar` avisa quando a pergunta e vaga | aviso nao bloqueia |
 | **Sessao reaproveitada** | `--continuar` retoma a sessao do executor em vez de abrir outra que releria tudo | |
+| **Rota por taxa de acerto** | na rota automatica, o executor com menos da metade dos jobs juntados naquele tipo (minimo 5 encerrados, ultimos 30 dias) vai para o fim da fila; `maestro rota` mostra quem desceu e por que | token gratis que vira descarte custa token caro de revisao; o rebaixado continua de reserva e volta quando o historico envelhece |
 | **Executor Claude enxuto** | o Haiku/Sonnet roda com `--strict-mcp-config --disable-slash-commands` (sem servidores MCP e sem skills) | numa leitura simples, a entrada caiu de ~100-157 mil para ~60 mil tokens (tarefas diferentes, comparacao aproximada) |
 | **Executor agy enxuto** | o agy roda com `--disable-slash-commands` (sem expansao de skills e comandos) e o raciocinio (`thinking_tokens`) entra na conta de saida do executor no `ganho` | o modo padrao do `agy -p` virou Auto no 1.5.7; a autonomia continua explicita com `--dangerously-skip-permissions` |
 | **Sem cascata** | o executor nao pode delegar de novo: `maestro run`/`consultar` recusam rodar dentro de um executor (`MAESTRO_EU` definido) | |

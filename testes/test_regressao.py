@@ -443,5 +443,52 @@ class TestCorrecoesExecutor(unittest.TestCase):
             self.assertIn('"falha_local"', f.read())
 
 
+class TestRotaPorAcerto(unittest.TestCase):
+    """Executor gratis que descarta muito custa token caro de revisao: desce na rota e cede a correcao."""
+    setUp = TestExecutorSemMemoria.setUp
+    tearDown = TestExecutorSemMemoria.tearDown
+    importar_maestro = TestExecutorSemMemoria.importar_maestro
+
+    def historico(self, linhas):
+        with open(os.path.join(self.temp_dir, ".maestro", "historico.jsonl"), "a", encoding="utf-8") as f:
+            for evento, eid, tipo, data in linhas:
+                f.write(json.dumps({"evento": evento, "job": "j", "exec": eid, "tipo": tipo, "data": data}) + "\n")
+
+    def test_29_fraco_vai_para_o_fim(self):
+        import time
+        hoje = time.strftime("%Y-%m-%dT%H:%M:%S")
+        self.historico([("descartar", "gratis", None, hoje)] * 4 + [("juntar", "gratis", None, hoje)]
+                       + [("juntar", "flash", "implementar", hoje)] * 5)
+        modulo = self.importar_maestro()
+        self.assertEqual(modulo.ordenar_por_acerto(["gratis", "outro", "flash"], None), ["outro", "flash", "gratis"])
+        # outro tipo nao herda o placar; todos fracos = nada muda
+        self.assertEqual(modulo.ordenar_por_acerto(["gratis", "flash"], "docs"), ["gratis", "flash"])
+        self.assertEqual(modulo.ordenar_por_acerto(["gratis"], None), ["gratis"])
+
+    def test_30_amostra_pequena_e_historico_velho_nao_rebaixam(self):
+        import time
+        hoje = time.strftime("%Y-%m-%dT%H:%M:%S")
+        self.historico([("descartar", "novo", None, hoje)] * 4 + [("descartar", "velho", None, "2000-01-01T00:00:00")] * 9)
+        modulo = self.importar_maestro()
+        self.assertEqual(modulo.ordenar_por_acerto(["novo", "velho", "x"], None), ["novo", "velho", "x"])
+
+    def test_31_correcao_troca_gratis_que_falhou(self):
+        modulo = self.importar_maestro()
+        cat = {"gratis": {"cota": "local"}, "flash": {"cota": "google"}}
+        os.makedirs(modulo.job_dir("t2"), exist_ok=True)
+        with open(os.path.join(modulo.job_dir("t2"), "tarefa-r1.md"), "w", encoding="utf-8") as f:
+            f.write("TAREFA ORIGINAL")
+        j = {"job": "t2", "rodada": 2, "exec_usado": "gratis", "falhou": "verificacao"}
+        execs, texto = modulo.correcao(j, ["gratis", "flash"], cat, "conserte X", True)
+        self.assertEqual(execs, ["flash", "gratis"])
+        self.assertIn("TAREFA ORIGINAL", texto)
+        self.assertIn("conserte X", texto)
+        # pago que falhou, rodada que passou ou lista explicita: mesmo executor, so a correcao
+        for jj, cc, auto in ((dict(j, exec_usado="flash"), cat, True), (dict(j, falhou=None), cat, True), (j, cat, False)):
+            execs, texto = modulo.correcao(jj, ["gratis", "flash"], cc, "conserte X", auto)
+            self.assertEqual(execs, ["gratis", "flash"])
+            self.assertNotIn("TAREFA ORIGINAL", texto)
+
+
 if __name__ == "__main__":
     unittest.main()
