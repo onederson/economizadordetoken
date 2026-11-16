@@ -31,6 +31,7 @@ cota = "local"
 custo = "barato"
 nivel = 1
 privado = true
+timeout = 900   # modelo local travado cede a vez em 15 min (max_saida: teto de tokens, padrao 16000)
 forte = "leitura, coleta de fatos, tarefas pequenas e docs; 100% local e gratis (~7 GB)"
 fraco = "modelo 12B local: nao use para implementacao complexa"
 
@@ -41,6 +42,7 @@ cota = "local"
 custo = "barato"
 nivel = 2
 privado = true
+timeout = 900   # modelo local travado cede a vez em 15 min (max_saida: teto de tokens, padrao 16000)
 forte = "implementacao com especificacao fechada, testes e refatoracao; MoE 35B-A3B rapido, 100% local e gratis"
 fraco = "consome ~22 GB de RAM/VRAM; escale se a tarefa exigir decisao de arquitetura"
 
@@ -51,6 +53,7 @@ cota = "local"
 custo = "barato"
 nivel = 2
 privado = true
+timeout = 900   # modelo local travado cede a vez em 15 min (max_saida: teto de tokens, padrao 16000)
 forte = "fallback local nivel 2 para codigo geral, docs e tarefas pequenas (~14 GB)"
 fraco = "menos especializado em codigo que o qwen3.6-coding"
 

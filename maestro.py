@@ -41,6 +41,8 @@ ESCALAR_RE = re.compile(r"^\s*ESCALAR:\s*", re.M)
 SINAL_RE = re.compile(r"error|erro\b|fail|falh|exception|traceback|assert|panic|fatal|denied|not found|"
                       r"nao encontrad|warning|^E\s|^\s*File \"", re.I)
 ARQ_RE = re.compile(r"`[^`]+`|[\w./\\-]+\.[A-Za-z]{1,5}\b")
+VAZIA_RE = re.compile(r"^Ran 0 tests?\b|\bNO TESTS RAN\b|\bno tests ran\b|\bcollected 0 items\b|\bNo tests found\b|"
+                      r"\bno test files\b|^0 passing\b", re.I | re.M)
 COTA_RE = re.compile(r"\b40[23]\b|insufficient (?:credit|balance|quota)|out of credits|no credits? (?:left|remaining)|payment required|all models? (?:failed|unavailable)|\b429\b|RESOURCE_EXHAUSTED|quota|rate.?limit|usage limit|exhausted|limite de uso|compaction\.failed", re.I)
 
 LEITURA = (
@@ -377,6 +379,9 @@ def montar(ex, prompt, sessao, timeout, leitura=False):
             env.pop(k, None)
         env["ANTHROPIC_BASE_URL"] = ex.get("url") or os.environ.get("OLLAMA_API_URL", "http://127.0.0.1:11434")
         env["ANTHROPIC_API_KEY"] = "ollama"
+        # modelo local em loop gera texto ate o teto do Claude Code (32k); com teto menor ele falha antes e o maestro
+        # passa para o proximo executor (catalogo: max_saida)
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(ex.get("max_saida", 16000))
         cmd = [exe, "-p", prompt, "--model", modelo, "--output-format", "json", "--dangerously-skip-permissions",
                "--strict-mcp-config", "--disable-slash-commands", "--bare"]
         if leitura:
@@ -582,13 +587,14 @@ def executar(j, execs, cat, a, passo=0):
             print(f"pulando {eid}: servidor ollama indisponivel; tentando o proximo")
             continue
         sessao = j["sessao"] if j.get("exec_usado") == eid else None
-        cmd, env = montar(ex, REGRAS, sessao, a.timeout)
+        limite = min(a.timeout, int(ex.get("timeout", a.timeout)))  # catalogo: timeout proprio do executor
+        cmd, env = montar(ex, REGRAS, sessao, limite)
         log = os.path.join(job_dir(j["job"]), f"log-r{j['rodada']}{f'-e{passo}' if passo else ''}-{eid}.txt")
         estourou = False
         try:
             r = subprocess.run(cmd, cwd=j["wt"], env=ambiente(env, j["wt"], eid), stdin=subprocess.DEVNULL,
                                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               timeout=a.timeout + 60)
+                               timeout=limite + 60)
             bruto, err, rc = r.stdout, r.stderr, r.returncode
         except subprocess.TimeoutExpired as t:
             bruto = t.stdout.decode("utf-8", "replace") if isinstance(t.stdout, bytes) else (t.stdout or "")
@@ -601,8 +607,10 @@ def executar(j, execs, cat, a, passo=0):
             print(f"{eid}: cota esgotada (marcado ate {ate}); tentando o proximo")
             registrar({"evento": "cota", "exec": eid, "ate": ate})
             continue
-        if ex["cli"] == "ollama" and (not estourou and (rc != 0 or erro)):
-            print(f"{eid}: falhou no ollama ({str(erro or 'erro local')[:120]}); tentando o proximo")
+        if ex["cli"] == "ollama" and (estourou or rc != 0 or erro):
+            motivo = f"passou de {limite}s" if estourou else str(erro or "erro local")[:120]
+            print(f"{eid}: falhou no ollama ({motivo}); tentando o proximo")
+            registrar({"evento": "falha_local", "exec": eid, "job": j["job"], "motivo": motivo})
             continue
         return {"exec": eid, "sessao": sessao_n, "texto": texto_r, "tin": tin, "tout": tout, "erro": erro,
                 "rc": rc, "estourou": estourou}
@@ -714,6 +722,9 @@ def cmd_run(a):
                                capture_output=True, text=True, encoding="utf-8", errors="replace",
                                stdin=subprocess.DEVNULL, timeout=600)
             verif = {"ok": v.returncode == 0, "rc": v.returncode, "saida": v.stdout + v.stderr}
+            if verif["ok"] and VAZIA_RE.search(verif["saida"]):
+                # unittest no Python < 3.12 sai com 0 quando nao acha teste; um executor que nao entrega teste passaria
+                verif.update(ok=False, vazia=True)
         except subprocess.TimeoutExpired:
             verif = {"ok": False, "rc": 124, "saida": "verificacao estourou 600 s"}
         mudancas(j)  # limpa o que a verificacao possa ter deixado no indice
@@ -729,7 +740,8 @@ def cmd_run(a):
         out.append("erro: " + str(erro)[:400])
     out.append("alteracoes:\n" + (stat[-1200:] if stat else "  nenhuma"))
     if verif is not None:
-        out.append(f"verificacao: {'OK' if verif['ok'] else 'FALHOU'} (exit {verif['rc']})")
+        out.append(f"verificacao: {'OK' if verif['ok'] else 'FALHOU'} (exit {verif['rc']})"
+                   + (" - nenhum teste rodou; confira se o arquivo de teste existe e e encontrado" if verif.get("vazia") else ""))
         if not verif["ok"]:
             completo = os.path.join(job_dir(j["job"]), f"verif-r{j['rodada']}.txt")
             with open(completo, "w", encoding="utf-8") as f:

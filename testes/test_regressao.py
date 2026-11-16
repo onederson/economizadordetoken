@@ -392,5 +392,56 @@ class TestExecutorSemMemoria(unittest.TestCase):
         self.assertIn("nao use a skill maestro", modulo.REGRAS)
 
 
+class TestCorrecoesExecutor(unittest.TestCase):
+    """Regressoes achadas no uso real: verificacao vazia aprovada e modelo local em loop prendendo o job."""
+    setUp = TestExecutorSemMemoria.setUp
+    tearDown = TestExecutorSemMemoria.tearDown
+    importar_maestro = TestExecutorSemMemoria.importar_maestro
+
+    def test_26_verificacao_sem_teste_nao_e_ok(self):
+        modulo = self.importar_maestro()
+        for saida in ("\n----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nOK\n",
+                      "NO TESTS RAN", "collected 0 items", "No tests found, exiting with code 1"):
+            self.assertTrue(modulo.VAZIA_RE.search(saida), saida)
+        for saida in ("Ran 1 test in 0.1s\n\nOK", "Ran 25 tests in 4.5s\n\nOK", "10 passed", "Todos os testes passaram."):
+            self.assertFalse(modulo.VAZIA_RE.search(saida), saida)
+
+    def test_27_ollama_tem_teto_de_saida(self):
+        modulo = self.importar_maestro()
+        with unittest.mock.patch.object(modulo.shutil, "which", return_value="claude"):
+            _, env = modulo.montar({"cli": "ollama", "modelo": "x"}, "p", None, 60)
+            self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "16000")
+            _, env = modulo.montar({"cli": "ollama", "modelo": "x", "max_saida": 8000}, "p", None, 60)
+            self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "8000")
+
+    def test_28_ollama_travado_cede_a_vez(self):
+        import types
+        modulo = self.importar_maestro()
+        wt = os.path.join(self.temp_dir, "wt")
+        os.makedirs(wt)
+        os.makedirs(modulo.job_dir("t1"), exist_ok=True)
+        cat = {"ollama-x": {"cli": "ollama", "modelo": "m", "timeout": 900},
+               "cc-x": {"cli": "claude", "modelo": "haiku"}}
+        ok_json = json.dumps({"session_id": "s", "result": "RESULTADO: feito", "usage": {}})
+        chamadas = []
+
+        def falso_run(cmd, **kw):
+            chamadas.append(kw.get("timeout"))
+            if len(chamadas) == 1:
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+            return subprocess.CompletedProcess(cmd, 0, ok_json, "")
+
+        with unittest.mock.patch.object(modulo.shutil, "which", return_value="claude"), \
+                unittest.mock.patch.object(modulo, "garantir_ollama", return_value=True), \
+                unittest.mock.patch.object(modulo, "esgotados", return_value={}), \
+                unittest.mock.patch.object(modulo.subprocess, "run", side_effect=falso_run):
+            r = modulo.executar({"job": "t1", "rodada": 1, "wt": wt, "sessao": None}, ["ollama-x", "cc-x"], cat,
+                                types.SimpleNamespace(timeout=1800, horas_cota=5))
+        self.assertEqual(r["exec"], "cc-x")
+        self.assertEqual(chamadas, [960, 1860])  # o local usa o timeout proprio; o proximo, o do run
+        with open(os.path.join(self.temp_dir, ".maestro", "historico.jsonl"), encoding="utf-8") as f:
+            self.assertIn('"falha_local"', f.read())
+
+
 if __name__ == "__main__":
     unittest.main()
