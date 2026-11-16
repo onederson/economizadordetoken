@@ -1,6 +1,6 @@
 ---
 name: maestro
-description: Divide a tarefa entre modelos de varias empresas para gastar o minimo de token. Vale para qualquer modelo, do mais fraco ao mais forte - cada parte vai para o menor modelo que da conta. O que exige mais que voce sobe como consulta curta a um modelo maior; o trabalho bracal desce para um modelo igual ou menor (OmniRoute gratis, depois Gemini Flash no agy, por ultimo Haiku) via `maestro.py`, em worktree isolado. Use no inicio de qualquer tarefa com varios passos (implementacao, refatoracao, testes, investigacao, leitura de logs ou codigo grande) e sempre que o usuario falar em economizar token, delegar, usar modelo barato ou maior, agy, flash, haiku ou dividir o trabalho.
+description: Divide a tarefa entre modelos de varias empresas para gastar o minimo de token. Vale para qualquer modelo, do mais fraco ao mais forte - cada parte vai para o menor modelo que da conta. O que exige mais que voce sobe como consulta curta a um modelo maior; o trabalho bracal desce para um modelo igual ou menor (1) Ollama local (gratis)  2) OmniRoute (gratis)  3) agy (Gemini Flash)  4) Claude Code (Haiku)) via `maestro.py`, em worktree isolado. Use no inicio de qualquer tarefa com varios passos (implementacao, refatoracao, testes, investigacao, leitura de logs ou codigo grande) e sempre que o usuario falar em economizar token, delegar, usar modelo barato ou maior, agy, flash, haiku ou dividir o trabalho.
 ---
 
 # Maestro: cada parte no menor modelo que da conta
@@ -11,14 +11,16 @@ Ferramenta: `python ~/.maestro/maestro.py` (abaixo, `maestro`), rodada pelo seu 
 
 **Se a variavel de ambiente `MAESTRO_EU` existe, voce e um executor lancado pelo maestro: ignore esta skill**, faca a tarefa e, se faltar uma decisao, responda `ESCALAR: <pergunta>`. O maestro recusa delegar de dentro de um executor.
 
+**Guarda (Claude Code):** hooks instalados pelo `instalar.py` lembram este criterio a cada tarefa nova, avisam depois de ~12 chamadas de execucao sem delegar e, se a sessao trabalhou muito sem delegar nada, seguram o fim uma vez pedindo justificativa. Quando aparecer `[maestro]` no contexto, responda com a decisao declarada (`maestro: sim - ...` ou `maestro: nao - motivo`) e aja de acordo; nao ignore. `python ~/.maestro/guarda.py relatorio` mostra quanto cada sessao delegou.
+
 ## 0. Saiba o seu nivel
 
 | Nivel | Aguenta | Modelos |
 |---|---|---|
 | 4 | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, Gemini 4 Carbon, GPT de topo |
 | 3 | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Argon, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
-| 2 | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, Gemini 4 Hydrogen medium/low, free-code, modelos "mini" |
-| 1 | ler, coletar, extrair fatos, edicao mecanica | Flash low/lite, free-fast, modelos "nano" |
+| 2 | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, Gemini 4 Hydrogen medium/low, ollama-qwen-code, ollama-gpt-oss, free-code, modelos "mini" |
+| 1 | ler, coletar, extrair fatos, edicao mecanica | Flash low/lite, ollama-gemma4, free-fast, modelos "nano" |
 
 Passe o seu nivel em `--eu` (o numero, ou o seu id do catalogo, ex.: `--eu cc-haiku`). Se o seu modelo nao esta na tabela, compare pelo nome (pro/sonnet = 3, flash/haiku/mini = 2) e, na duvida, use 2. Antes da primeira chamada da sessao rode `maestro rota --eu <voce>`: mostra, sem gastar nada, quem esta abaixo ou igual a voce, quem esta acima e o que esta esgotado.
 
@@ -75,7 +77,7 @@ A pergunta precisa se bastar, porque o modelo maior nao viu a sua conversa: o qu
 
 ## 3. Descer: escolher o executor
 
-**Ordem de gasto definida pelo usuario, nesta ordem exata: 1) OmniRoute (gratis)  2) agy (Gemini Flash)  3) Claude Code (Haiku).** So passe para o proximo bolso quando o anterior estiver sem cota.
+**Ordem de gasto definida pelo usuario, nesta ordem exata: 1) Ollama local (gratis)  2) OmniRoute (gratis)  3) agy (Gemini Flash)  4) Claude Code (Haiku).** So passe para o proximo bolso quando o anterior estiver sem cota.
 
 `--exec auto` (padrao) usa a rota do `--tipo` no catalogo, tira quem e maior que o `--eu`, e passa ao proximo sozinho quando a cota acaba.
 
@@ -84,7 +86,7 @@ A pergunta precisa se bastar, porque o modelo maior nao viu a sua conversa: o qu
 | Coletar / ler | `maestro run --leitura --eu <voce> --tipo ler "pergunta"` (dentro do Claude Code, os subagentes nativos `Explore`/`mecanico` gastam Claude: so quando os outros bolsos estiverem esgotados ou para 1 a 2 chamadas) |
 | Implementar, testes, refatorar | `maestro run --eu <voce> --tipo implementar ...` |
 | Tarefa pequena, docs | `--tipo pequena` / `--tipo docs` |
-| Codigo com segredo ou de cliente | acrescente `--sensivel` (pula o OmniRoute, comeca no agy) |
+| Codigo com segredo ou de cliente | acrescente `--sensivel` (pula so o OmniRoute, mantendo `local`, `agy` e `claude`) |
 | Execucao que exige mais que voce | `--tipo dificil` (credit-strong > Hydrogen high > Argon > Opus no agy > Sonnet); avise o usuario em uma linha |
 
 - `--exec a,b,c` forca uma lista propria; use so com motivo (ex.: `maestro sugerir <tipo>` mostra que um executor erra muito nesse tipo).
@@ -157,4 +159,4 @@ Ao fim de uma tarefa longa, `maestro ganho --dias 1`: mostra quanto os executore
 | `maestro sugerir [tipo]` | taxa de acerto por executor |
 | `maestro ganho [--dias 30]` | tokens processados pelos executores, o que voltou, onde se perdeu |
 
-Adicionar executor: edite `~/.maestro/catalogo.toml` (cli `claude`, `agy` ou `opencode`; `nivel` de 1 a 4).
+Adicionar executor: edite `~/.maestro/catalogo.toml` (cli `claude`, `ollama`, `agy` ou `opencode`; `nivel` de 1 a 4).

@@ -4,7 +4,7 @@
 # poupar = true: so use se o usuario pedir ou se os baratos falharem 2 vezes.
 # privado = false: provedor pode registrar o que recebe; nada com segredo.
 #
-# Ordem de gasto definida pelo usuario: 1) OmniRoute  2) agy  3) Claude Code.
+# Ordem de gasto definida pelo usuario: 1) Ollama local (gratis)  2) OmniRoute (gratis)  3) agy  4) Claude Code.
 # "--exec auto" usa a rota do --tipo abaixo: tenta o primeiro, e se a cota acabar passa ao proximo.
 #
 # nivel: o que o modelo aguenta. 1 ler/coletar/mecanico | 2 implementar com especificacao fechada |
@@ -12,17 +12,47 @@
 # Quem orquestra informa --eu (id ou nivel): "run" so desce para nivel igual ou menor, "consultar" sobe
 # para o mais barato acima, na ordem de bolsos abaixo. Sessoes fora do catalogo: Fable/Opus = 4.
 
-bolsos = ["omniroute", "google", "anthropic"]
+bolsos = ["local", "omniroute", "google", "anthropic"]
 
 [rotas]
-implementar = ["omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
-pequena     = ["omni-free-fast", "omni-free-code", "agy-flash-medium", "cc-haiku"]
-testes      = ["omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
-refatorar   = ["omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
-docs        = ["omni-free-fast", "omni-free-code", "agy-flash-medium", "cc-haiku"]
-ler         = ["omni-free-fast", "omni-free-code", "agy-flash-low", "cc-haiku"]
-pesquisar   = ["omni-free-code", "agy-flash-medium", "cc-haiku"]
+implementar = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
+pequena     = ["ollama-gemma4", "ollama-qwen-code", "ollama-gpt-oss", "omni-free-fast", "omni-free-code", "agy-flash-medium", "cc-haiku"]
+testes      = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
+refatorar   = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
+docs        = ["ollama-gemma4", "ollama-gpt-oss", "omni-free-fast", "omni-free-code", "agy-flash-medium", "cc-haiku"]
+ler         = ["ollama-gemma4", "omni-free-fast", "ollama-qwen-code", "omni-free-code", "agy-flash-low", "cc-haiku"]
+pesquisar   = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-medium", "cc-haiku"]
 dificil     = ["omni-credit-strong", "agy-hydrogen-high", "agy-argon-high", "agy-opus", "cc-sonnet"]
+
+[ollama-gemma4]
+cli = "ollama"
+modelo = "gemma4:12b-it-qat"
+cota = "local"
+custo = "barato"
+nivel = 1
+privado = true
+forte = "leitura, coleta de fatos, tarefas pequenas e docs; 100% local e gratis (~7 GB)"
+fraco = "modelo 12B local: nao use para implementacao complexa"
+
+[ollama-qwen-code]
+cli = "ollama"
+modelo = "qwen3.6:35b-a3b-coding"
+cota = "local"
+custo = "barato"
+nivel = 2
+privado = true
+forte = "implementacao com especificacao fechada, testes e refatoracao; MoE 35B-A3B rapido, 100% local e gratis"
+fraco = "consome ~22 GB de RAM/VRAM; escale se a tarefa exigir decisao de arquitetura"
+
+[ollama-gpt-oss]
+cli = "ollama"
+modelo = "gpt-oss:20b"
+cota = "local"
+custo = "barato"
+nivel = 2
+privado = true
+forte = "fallback local nivel 2 para codigo geral, docs e tarefas pequenas (~14 GB)"
+fraco = "menos especializado em codigo que o qwen3.6-coding"
 
 [agy-flash-high]
 cli = "agy"

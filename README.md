@@ -479,6 +479,32 @@ onde se perdeu:
 
 ---
 
+## Guarda: garante que o maestro e considerado
+
+Uma skill so funciona se o modelo lembrar dela, e na pratica ele esquecia: sessoes com centenas de chamadas e nenhuma delegacao. O `guarda.py` sao hooks do Claude Code que rodam sempre, sem depender da memoria do modelo:
+
+| Quando | O que o guarda faz |
+|---|---|
+| Tarefa nova (mensagem com mais de 40 caracteres) | coloca no contexto o criterio de quando delegar e exige a primeira linha `maestro: sim - ...` ou `maestro: nao - motivo` |
+| A cada 12 chamadas de execucao (ler, buscar, editar, rodar) sem delegar | pede para reavaliar o que falta e justificar em 1 linha se continuar sozinho |
+| Fim de sessao com 20+ chamadas e nenhuma delegacao | segura o fim uma vez e pede a delegacao do que falta ou a justificativa; anota `auditoria` no historico |
+
+Conta como delegacao: `maestro.py` no terminal ou subagente barato (`Explore`, `implementador`, `mecanico`). Carregar a skill nao conta. Executores lancados pelo maestro (`MAESTRO_EU`) e worktrees em `~/.maestro/wt` sao ignorados.
+
+- `python ~/.maestro/guarda.py relatorio`: por sessao, quanto trabalho, quantas delegacoes, avisos e auditorias.
+- Ajustes: `MAESTRO_LIMITE_AVISO` (12), `MAESTRO_LIMITE_PARADA` (20), `MAESTRO_GUARDA=0` desliga; `python instalar.py --sem-guarda` remove os hooks.
+
+**Executor sem memoria.** O executor `claude` roda com `--settings ~/.maestro/executor-settings.json`, que desliga todos os plugins (o `ollama` ja usa `--bare`). Antes disso, o ai-memory gravava as sessoes dos executores como se fossem do usuario e aprendeu o "nao use a skill maestro" do prompt do executor como habito, injetando-o em toda sessao.
+
+## Testes
+
+- `python -m unittest discover -s testes -v`: regressao, sem modelo e sem rede (guarda, instalador em HOME temporario, executor sem plugins).
+- `python testes/smoke.py`: confere esta maquina (instalado == repo, hooks, memoria limpa, `rota`). Opcoes: `--modelo` (Haiku confirma que o executor nao ve o ai-memory), `--completo` (tarefa real ate a verificacao), `--inspiracoes` (headroom e rtk desde a ultima revisao), `--tudo`.
+
+Rode os dois depois de mudar o maestro e antes de subir.
+
+---
+
 ## Usando de qualquer CLI
 
 O maestro e um comando de terminal; qualquer agente que roda shell pode usa-lo. A skill diz ao modelo como:
@@ -506,10 +532,14 @@ repositorio
 ├── maestro.py        a ferramenta
 ├── catalogo.toml     executores, rotas e bolsos
 ├── SKILL.md          a skill (diretrizes do orquestrador)
-└── instalar.py       instalador
+├── guarda.py         hooks que cobram a decisao de delegar
+├── instalar.py       instalador (codigo, skill e hooks do guarda)
+└── testes/           test_regressao.py (unittest) e smoke.py (esta maquina)
 
 ~/.maestro/
 ├── maestro.py, catalogo.toml   copia instalada
+├── guarda.py, guarda/          guarda instalado e contadores por sessao
+├── executor-settings.json      settings do executor claude (plugins desligados)
 ├── estado.json                 executores esgotados e ate quando
 ├── historico.jsonl             um evento por linha: run, leitura, consulta, cota, juntar, descartar
 ├── jobs/<job>/                 job.json, tarefa-rN.md, log-rN-<exec>.txt, verif-rN.txt, final.patch
@@ -536,4 +566,4 @@ O `historico.jsonl` alimenta `sugerir` e `ganho`. Cada `run` registra executor, 
 
 - [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom): compressao reversivel (o original fica guardado e recuperavel), preservar erros e valores fora do padrao, nao tocar no que o usuario escreveu, pular o que e curto.
 - [rtk-ai/rtk](https://github.com/rtk-ai/rtk): filtrar saida de comando antes de entrar no contexto, mostrar so falhas de teste, nunca imprimir mais que o original, falhar aberto, indicar como recuperar a saida completa, medir o ganho (`rtk gain`).
-Revisado em 2026-11-14 (headroom no commit `fda75de`, rtk 1.2.0): as ideias novas (Output Shaper, CacheAligner, pipelines/tasks do rtk) dependem de proxy na frente da API ou de filtros que podem esconder erro; nada foi incorporado alem do que esta acima.
+Revisado em 2026-11-16 (headroom no commit `5023c84e`, rtk 1.2.0): as ideias novas (Output Shaper, CacheAligner, pipelines/tasks do rtk) dependem de proxy na frente da API ou de filtros que podem esconder erro; nada foi incorporado alem do que esta acima. Desde a revisao anterior (`fda75de`) o headroom so trouxe correcoes do proxy, da memoria e dependencias, e o rtk nao lancou versao estavel (so `dev-1.2.1-rc`, com correcoes de hook, opencode e dotnet). `python testes/smoke.py --inspiracoes` avisa quando algum dos dois andar.

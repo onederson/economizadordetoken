@@ -26,7 +26,7 @@ Niveis (qualquer modelo pode orquestrar; --eu e o seu id no catalogo ou o seu ni
 Dados em ~/.maestro (estado.json, historico.jsonl, jobs/, wt/).
 Saida do run: 0 ok, 1 erro, 2 timeout, 3 verificacao falhou, 4 executor parou com duvida.
 """
-import argparse, collections, hashlib, json, os, re, secrets, shutil, subprocess, sys, time, tomllib
+import argparse, collections, hashlib, json, os, re, secrets, shutil, subprocess, sys, time, tomllib, urllib.error, urllib.request
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 CASA = os.path.expanduser("~/.maestro")
@@ -36,12 +36,12 @@ HISTORICO = os.path.join(CASA, "historico.jsonl")
 TAREFA = ".maestro-tarefa.md"
 # lixo de build/execucao que nunca vai para o patch, mesmo sem .gitignore
 LIXO = [f":(exclude,glob){g}" for g in ("**/__pycache__/**", "**/*.pyc", "**/node_modules/**", "**/.pytest_cache/**", "**/*.log")]
-BOLSOS = ["omniroute", "google", "anthropic"]  # ordem de gasto, se o catalogo nao disser outra
+BOLSOS = ["local", "omniroute", "google", "anthropic"]  # ordem de gasto, se o catalogo nao disser outra
 ESCALAR_RE = re.compile(r"^\s*ESCALAR:\s*", re.M)
 SINAL_RE = re.compile(r"error|erro\b|fail|falh|exception|traceback|assert|panic|fatal|denied|not found|"
                       r"nao encontrad|warning|^E\s|^\s*File \"", re.I)
 ARQ_RE = re.compile(r"`[^`]+`|[\w./\\-]+\.[A-Za-z]{1,5}\b")
-COTA_RE = re.compile(r"\b40[23]\b|insufficient (?:credit|balance|quota)|out of credits|no credits? (?:left|remaining)|payment required|all models? (?:failed|unavailable)|\b429\b|RESOURCE_EXHAUSTED|quota|rate.?limit|usage limit|exhausted|limite de uso", re.I)
+COTA_RE = re.compile(r"\b40[23]\b|insufficient (?:credit|balance|quota)|out of credits|no credits? (?:left|remaining)|payment required|all models? (?:failed|unavailable)|\b429\b|RESOURCE_EXHAUSTED|quota|rate.?limit|usage limit|exhausted|limite de uso|compaction\.failed", re.I)
 
 LEITURA = (
     "Voce coleta informacao para outro modelo. Leia o arquivo {arq} e faca o que ele pede. "
@@ -297,18 +297,88 @@ def remover_worktree(j):
 
 # ---------- adaptadores ----------
 
+def garantir_ollama(url="http://127.0.0.1:11434"):
+    api = f"{url.rstrip('/')}/api/version"
+    try:
+        with urllib.request.urlopen(api, timeout=1.5) as r:
+            if r.status == 200:
+                return True
+    except Exception:
+        pass
+    exe = shutil.which("ollama")
+    if not exe:
+        cand = os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe")
+        if os.path.isfile(cand):
+            exe = cand
+    if not exe:
+        return False
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if os.name == "nt":
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        kwargs["creationflags"] = flags
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen([exe, "serve"], **kwargs)
+    except Exception:
+        return False
+    for _ in range(16):
+        time.sleep(0.5)
+        try:
+            with urllib.request.urlopen(api, timeout=1.5) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def config_executor():
+    """Arquivo de settings do executor claude: desliga plugins que capturam a sessao (ai-memory e afins)."""
+    caminho = os.path.join(CASA, "executor-settings.json")
+    plugins = {}
+    try:
+        with open(os.path.expanduser("~/.claude/settings.json"), encoding="utf-8") as f:
+            plugins = {k: False for k in (json.load(f).get("enabledPlugins") or {})}
+    except Exception:
+        pass
+    plugins.setdefault("ai-memory@ai-memory", False)
+    conteudo = json.dumps({"enabledPlugins": plugins}, indent=2)
+    try:
+        with open(caminho, encoding="utf-8") as f:
+            if f.read() == conteudo:
+                return caminho
+    except OSError:
+        pass
+    with open(caminho, "w", encoding="utf-8") as f:
+        f.write(conteudo)
+    return caminho
+
+
 def montar(ex, prompt, sessao, timeout, leitura=False):
     cli, modelo = ex["cli"], ex["modelo"]
-    exe = shutil.which(cli)
+    exe = shutil.which("claude" if cli == "ollama" else cli)
     if not exe:
-        sys.exit(f"{cli} nao encontrado no PATH")
+        sys.exit(f"{'claude' if cli == 'ollama' else cli} nao encontrado no PATH")
     env = dict(os.environ)
     if cli == "claude":
         for k in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"):
             env.pop(k, None)
-        # sem servidores MCP e sem skills: o executor nao precisa deles e eles inflam o contexto de cada chamada
+        # sem servidores MCP e sem skills: o executor nao precisa deles e eles inflam o contexto de cada chamada.
+        # Sem plugins de memoria: senao o prompt do executor ("nao use a skill maestro") vira "habito do usuario"
         cmd = [exe, "-p", prompt, "--model", modelo, "--output-format", "json", "--dangerously-skip-permissions",
-               "--strict-mcp-config", "--disable-slash-commands"]
+               "--strict-mcp-config", "--disable-slash-commands", "--settings", config_executor()]
+        if leitura:
+            cmd += ["--disallowedTools", "Edit", "Write", "NotebookEdit"]
+        if sessao:
+            cmd += ["--resume", sessao]
+    elif cli == "ollama":
+        for k in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "ANTHROPIC_AUTH_TOKEN"):
+            env.pop(k, None)
+        env["ANTHROPIC_BASE_URL"] = ex.get("url") or os.environ.get("OLLAMA_API_URL", "http://127.0.0.1:11434")
+        env["ANTHROPIC_API_KEY"] = "ollama"
+        cmd = [exe, "-p", prompt, "--model", modelo, "--output-format", "json", "--dangerously-skip-permissions",
+               "--strict-mcp-config", "--disable-slash-commands", "--bare"]
         if leitura:
             cmd += ["--disallowedTools", "Edit", "Write", "NotebookEdit"]
         if sessao:
@@ -334,7 +404,7 @@ def montar(ex, prompt, sessao, timeout, leitura=False):
 
 def interpretar(cli, bruto):
     """Devolve (sessao, texto, tokens_in, tokens_out, erro)."""
-    if cli in ("claude", "agy"):
+    if cli in ("claude", "ollama", "agy"):
         dados = None
         for linha in reversed(bruto.strip().splitlines()):
             try:
@@ -345,7 +415,7 @@ def interpretar(cli, bruto):
         if not isinstance(dados, dict):
             return None, bruto[-1500:], 0, 0, "saida nao e JSON"
         u = dados.get("usage") or {}
-        if cli == "claude":
+        if cli in ("claude", "ollama"):
             tin = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
             erro = dados.get("result") if dados.get("is_error") else None
             return dados.get("session_id"), dados.get("result") or "", tin, u.get("output_tokens") or 0, erro
@@ -461,6 +531,9 @@ def perguntar(lista, cat, instrucao, texto, pasta, a):
                 print(f"pulando {eid}: cota esgotada ate {esg[eid]}")
                 continue
             ex = cat[eid]
+            if ex["cli"] == "ollama" and not garantir_ollama(ex.get("url") or os.environ.get("OLLAMA_API_URL", "http://127.0.0.1:11434")):
+                print(f"pulando {eid}: servidor ollama indisponivel; tentando o proximo")
+                continue
             prompt = instrucao.replace("{arq}", arq).replace("{pasta}", pasta)
             cmd, env = montar(ex, prompt, None, a.timeout, leitura=True)
             inicio = time.time()
@@ -473,6 +546,9 @@ def perguntar(lista, cat, instrucao, texto, pasta, a):
             _, texto_r, tin, tout, erro = interpretar(ex["cli"], r.stdout)
             if (r.returncode != 0 or erro) and COTA_RE.search(f"{erro or ''} {r.stderr[-3000:]} {r.stdout[-3000:]}"):
                 print(f"{eid}: cota esgotada (marcado ate {marcar_esgotado(eid, a.horas_cota)}); tentando o proximo")
+                continue
+            if ex["cli"] == "ollama" and (r.returncode != 0 or erro):
+                print(f"{eid}: falhou no ollama ({str(erro or 'erro local')[:120]}); tentando o proximo")
                 continue
             return eid, texto_r, tin, tout, erro, round(time.time() - inicio)
         return None
@@ -502,6 +578,9 @@ def executar(j, execs, cat, a, passo=0):
             print(f"pulando {eid}: cota esgotada ate {esg[eid]}")
             continue
         ex = cat[eid]
+        if ex["cli"] == "ollama" and not garantir_ollama(ex.get("url") or os.environ.get("OLLAMA_API_URL", "http://127.0.0.1:11434")):
+            print(f"pulando {eid}: servidor ollama indisponivel; tentando o proximo")
+            continue
         sessao = j["sessao"] if j.get("exec_usado") == eid else None
         cmd, env = montar(ex, REGRAS, sessao, a.timeout)
         log = os.path.join(job_dir(j["job"]), f"log-r{j['rodada']}{f'-e{passo}' if passo else ''}-{eid}.txt")
@@ -521,6 +600,9 @@ def executar(j, execs, cat, a, passo=0):
             ate = marcar_esgotado(eid, a.horas_cota)
             print(f"{eid}: cota esgotada (marcado ate {ate}); tentando o proximo")
             registrar({"evento": "cota", "exec": eid, "ate": ate})
+            continue
+        if ex["cli"] == "ollama" and (not estourou and (rc != 0 or erro)):
+            print(f"{eid}: falhou no ollama ({str(erro or 'erro local')[:120]}); tentando o proximo")
             continue
         return {"exec": eid, "sessao": sessao_n, "texto": texto_r, "tin": tin, "tout": tout, "erro": erro,
                 "rc": rc, "estourou": estourou}

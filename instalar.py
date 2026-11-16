@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Instala o maestro: codigo em ~/.maestro e a skill no Claude Code e no agy.
 Preserva catalogo.toml ja instalado (use --catalogo para sobrescrever)."""
-import os, shutil, sys
+import json, os, shutil, sys
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 CASA = os.path.expanduser("~/.maestro")
@@ -23,3 +23,34 @@ for pasta in SKILLS:
     os.makedirs(pasta, exist_ok=True)
     shutil.copy2(os.path.join(AQUI, "SKILL.md"), pasta)
     print("skill  ->", pasta)
+
+# Guarda: hooks do Claude Code que cobram a decisao de delegar (ver guarda.py). --sem-guarda remove.
+shutil.copy2(os.path.join(AQUI, "guarda.py"), CASA)
+CONFIG = os.path.expanduser("~/.claude/settings.json")
+if os.path.isdir(os.path.dirname(CONFIG)):
+    try:
+        with open(CONFIG, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        cfg = {}
+    guarda = os.path.join(CASA, "guarda.py").replace("\\", "/")
+    py = sys.executable.replace("\\", "/")
+    hooks = cfg.setdefault("hooks", {})
+    for evento in list(hooks):  # tira versoes antigas do guarda antes de registrar de novo
+        hooks[evento] = [g for g in hooks[evento] if "guarda.py" not in json.dumps(g)]
+        if not hooks[evento]:
+            del hooks[evento]
+    if "--sem-guarda" not in sys.argv:
+        for evento, modo, matcher in (("UserPromptSubmit", "prompt", None),
+                                      ("PostToolUse", "ferramenta", "*"),
+                                      ("Stop", "parar", None)):
+            grupo = {"hooks": [{"type": "command", "command": f'"{py}" -I "{guarda}" {modo}', "timeout": 10}]}
+            if matcher:
+                grupo["matcher"] = matcher
+            hooks.setdefault(evento, []).append(grupo)
+    if not hooks:
+        cfg.pop("hooks", None)
+    shutil.copy2(CONFIG, CONFIG + ".antes-do-guarda") if os.path.exists(CONFIG) else None
+    with open(CONFIG, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    print("guarda ->", CONFIG, "(removido)" if "--sem-guarda" in sys.argv else "(hooks prompt/ferramenta/parar)")
