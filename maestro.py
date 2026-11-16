@@ -262,9 +262,28 @@ def salvar_job(j):
 
 # ---------- worktree ----------
 
+# Marcador do ai-memory na pasta dos worktrees (a busca sobe do cwd ate a home, entao vale para todos).
+# A sessao do executor continua registrada no projeto, mas nao ensina habitos ao perfil do usuario (as regras
+# do executor, como "nao use o maestro", viravam padrao do orquestrador), nao recebe o resumo do perfil e
+# nao consome o handoff que era do orquestrador.
+MARCADOR_AI_MEMORY = (
+    "# Criado pelo maestro: sessoes de executor nao entram no perfil nem consomem handoff.\n"
+    "[profile]\ncontribute = false\nconsume = false\n\n"
+    "[handoff]\ndeliver_on_session_start = false\n"
+)
+
+
+def garantir_marcador(pasta):
+    caminho = os.path.join(pasta, ".ai-memory.toml")
+    if not os.path.exists(caminho):
+        with open(caminho, "w", encoding="utf-8") as f:
+            f.write(MARCADOR_AI_MEMORY)
+
+
 def criar_worktree(repo, job):
     wt = os.path.join(CASA, "wt", job)
     os.makedirs(os.path.dirname(wt), exist_ok=True)
+    garantir_marcador(os.path.dirname(wt))
     base = git(repo, "stash", "create").stdout.strip() or git(repo, "rev-parse", "HEAD", ok=True).stdout.strip()
     git(repo, "worktree", "add", "--detach", wt, base, ok=True)
     # arquivos novos do usuario (nao rastreados) tambem vao para o worktree

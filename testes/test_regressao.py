@@ -443,6 +443,31 @@ class TestCorrecoesExecutor(unittest.TestCase):
             self.assertIn('"falha_local"', f.read())
 
 
+class TestConvivenciaAiMemory(unittest.TestCase):
+    """As regras do executor viraram habito do perfil do usuario no ai-memory ('nao use o maestro')."""
+    setUp = TestExecutorSemMemoria.setUp
+    tearDown = TestExecutorSemMemoria.tearDown
+    importar_maestro = TestExecutorSemMemoria.importar_maestro
+
+    def test_32_marcador_isola_executor_do_perfil(self):
+        import tomllib
+        modulo = self.importar_maestro()
+        pasta = os.path.join(self.temp_dir, ".maestro", "wt")
+        os.makedirs(pasta)
+        modulo.garantir_marcador(pasta)
+        with open(os.path.join(pasta, ".ai-memory.toml"), "rb") as f:
+            cfg = tomllib.load(f)
+        self.assertEqual(cfg["profile"], {"contribute": False, "consume": False})
+        self.assertFalse(cfg["handoff"]["deliver_on_session_start"])
+        self.assertNotIn("project", cfg)  # nao renomeia o projeto da sessao
+        # nao sobrescreve um marcador que o usuario tenha ajustado
+        with open(os.path.join(pasta, ".ai-memory.toml"), "w", encoding="utf-8") as f:
+            f.write("[profile]\ncontribute = false\n")
+        modulo.garantir_marcador(pasta)
+        with open(os.path.join(pasta, ".ai-memory.toml"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "[profile]\ncontribute = false\n")
+
+
 class TestRotaPorAcerto(unittest.TestCase):
     """Executor gratis que descarta muito custa token caro de revisao: desce na rota e cede a correcao."""
     setUp = TestExecutorSemMemoria.setUp
