@@ -303,7 +303,7 @@ O que acontece depende de quem chamou:
 | Comando | Para que |
 |---|---|
 | `maestro catalogo [--completo]` | executores, nivel, bolso, custo, flags (`poupar`, `externo`, `ESGOTADO`) e rotas |
-| `maestro rota --eu N [--tipo T] [--sensivel]` | quem esta abaixo/igual e acima de voce. Nao gasta nada |
+| `maestro rota --eu N [--tipo T] [--sensivel]` | quem esta abaixo/igual e acima de voce, ja na ordem que o `run` vai usar (avisa quem desceu por taxa de acerto). Nao gasta nada |
 | `maestro run ...` | delegar (ver abaixo) |
 | `maestro consultar --eu N "duvida"` | subir uma decisao para o modelo mais barato acima de voce |
 | `maestro diff JOB [--stat] [--arquivo CAMINHO] [--max 400]` | o que o executor mudou |
@@ -324,7 +324,7 @@ O que acontece depende de quem chamou:
 | `--tipo T` | `implementar` | escolhe a rota: `ler`, `implementar`, `pequena`, `testes`, `refatorar`, `docs`, `pesquisar`, `dificil` |
 | `--exec auto\|a,b,c` | `auto` | `auto` usa a rota do tipo; ou uma lista propria, na ordem |
 | `--verificar "cmd"` | | rodado no worktree depois do executor; exit 0 = OK |
-| `--leitura` | | so coleta: roda na pasta real, sem worktree, sem editar |
+| `--leitura` | | so coleta, sem worktree e sem editar: le a pasta real (o agy roda em `~/.maestro/wt/_leitura` com o projeto adicionado por `--add-dir`, ver [Executor sem memoria](#guarda-garante-que-o-maestro-e-considerado)) |
 | `--continuar JOB` | | nova rodada no mesmo job (mesma sessao e worktree) |
 | `--sensivel` | | pula executores externos (`privado = false`, o OmniRoute) |
 | `--escalar N` | `1` | consultas automaticas acima por rodada |
@@ -364,11 +364,11 @@ O consultor roda em modo so leitura e responde em ate 25 linhas: **DECISAO, MOTI
 `~/.maestro/catalogo.toml` define executores, rotas e a ordem dos bolsos.
 
 ```toml
-bolsos = ["omniroute", "google", "anthropic"]   # ordem de gasto
+bolsos = ["local", "omniroute", "google", "anthropic"]   # ordem de gasto
 
-[rotas]
-implementar = ["omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
-ler         = ["omni-free-fast", "omni-free-code", "agy-flash-low", "cc-haiku"]
+[rotas]   # na rota automatica, quem tem taxa de acerto baixa no tipo desce para o fim (ver "Rota por taxa de acerto")
+implementar = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
+ler         = ["ollama-gemma4", "omni-free-fast", "ollama-qwen-code", "omni-free-code", "agy-flash-low", "cc-haiku"]
 dificil     = ["omni-credit-strong", "agy-hydrogen-high", "agy-argon-high", "agy-opus", "cc-sonnet"]
 # ... pequena, testes, refatorar, docs, pesquisar
 
@@ -430,12 +430,19 @@ Economizar token cortando informacao e facil; o dificil e cortar **sem** que o o
 | **Executor Claude enxuto** | o Haiku/Sonnet roda com `--strict-mcp-config --disable-slash-commands` (sem servidores MCP e sem skills) | numa leitura simples, a entrada caiu de ~100-157 mil para ~60 mil tokens (tarefas diferentes, comparacao aproximada) |
 | **Executor agy enxuto** | o agy roda com `--disable-slash-commands` (sem expansao de skills e comandos) e o raciocinio (`thinking_tokens`) entra na conta de saida do executor no `ganho` | o modo padrao do `agy -p` virou Auto no 1.5.7; a autonomia continua explicita com `--dangerously-skip-permissions` |
 | **Sem cascata** | o executor nao pode delegar de novo: `maestro run`/`consultar` recusam rodar dentro de um executor (`MAESTRO_EU` definido) | |
-| **Medicao** | `maestro ganho` mostra tokens por executor, quanto voltou ao orquestrador (estimado em caracteres/4) e onde se perdeu | |
+| **Medicao** | `maestro ganho` abre com a economia liquida (tokens feitos pelos executores em trabalho aproveitado, menos o que o orquestrador gastou mandando tarefas e lendo respostas), depois tokens por executor, quanto voltou ao orquestrador (estimado em caracteres/4) e onde se perdeu | a economia e um teto: o executor rele o contexto a cada turno, entao o orquestrador faria o mesmo trabalho com menos tokens |
 
 Formato do `ganho` (numeros ilustrativos):
 
 ```
-ultimos 30 dias. 'voltou' = o que entrou no contexto de quem orquestra, estimado como caracteres/4.
+ECONOMIA (ultimos 30 dias)
+  tokens que nao passaram pelo orquestrador: 1.743.104
+    = 1.767.041 feitos pelos executores em trabalho aproveitado (98.545 em modelo gratis: local/omniroute)
+    - 23.937 que o orquestrador gastou mandando tarefas e lendo respostas
+  fora da conta: 41.210 tokens de executor em jobs descartados
+  teto: o executor rele o contexto a cada turno; o orquestrador faria o mesmo trabalho com menos tokens que isso.
+
+por executor. 'voltou' = o que entrou no contexto de quem orquestra, estimado como caracteres/4.
 executor           bolso      chamadas   tokens in tokens out   voltou
 agy-flash-high     google            4     1416551     251945      612
 omni-free-code     omniroute         5       91962       6583      880
@@ -503,7 +510,7 @@ O `agy` nao tem como desligar hooks por chamada (o ai-memory se registra em `~/.
 
 ## Testes
 
-- `python -m unittest discover -s testes -v`: regressao, sem modelo e sem rede (guarda, instalador em HOME temporario, executor sem plugins).
+- `python -m unittest discover -s testes -v`: regressao, sem modelo e sem rede (guarda, instalador em HOME temporario, executor sem plugins, verificacao vazia, modelo local travado, rota por taxa de acerto, troca do gratis que falhou, marcador do ai-memory).
 - `python testes/smoke.py`: confere esta maquina (instalado == repo, hooks, memoria limpa, `rota`). Opcoes: `--modelo` (Haiku confirma que o executor nao ve o ai-memory), `--completo` (tarefa real ate a verificacao), `--inspiracoes` (headroom e rtk desde a ultima revisao), `--tudo`.
 
 Rode os dois depois de mudar o maestro e antes de subir.
@@ -549,6 +556,8 @@ repositorio
 ├── historico.jsonl             um evento por linha: run, leitura, consulta, cota, juntar, descartar
 ├── jobs/<job>/                 job.json, tarefa-rN.md, log-rN-<exec>.txt, verif-rN.txt, final.patch
 ├── wt/<job>/                   worktrees abertos
+├── wt/_leitura/                pasta de trabalho das leituras e consultas do agy
+├── wt/.ai-memory.toml          marcador: sessoes de executor fora do perfil e sem handoff
 └── respostas/                  respostas longas de leitura e consulta, na integra
 ```
 
