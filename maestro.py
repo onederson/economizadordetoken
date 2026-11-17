@@ -149,7 +149,10 @@ def profundidade():
 
 
 def ambiente(env, pasta, eid):
-    return {**env, "PWD": pasta, "MAESTRO_EU": eid, "MAESTRO_PROFUNDIDADE": str(profundidade() + 1)}
+    # AI_MEMORY_AUTO_HANDOFF=off: o hook do ai-memory (que o agy chama) nao cria handoff no fim da sessao do
+    # executor; sem isso, cada job deixava um handoff aberto que caia na proxima sessao do usuario
+    return {**env, "PWD": pasta, "MAESTRO_EU": eid, "MAESTRO_PROFUNDIDADE": str(profundidade() + 1),
+            "AI_MEMORY_AUTO_HANDOFF": "off"}
 
 
 def acima(n, cat, sensivel=False, minimo=None):
@@ -603,9 +606,17 @@ def perguntar(lista, cat, instrucao, texto, pasta, a):
                 continue
             prompt = instrucao.replace("{arq}", arq).replace("{pasta}", pasta)
             cmd, env = montar(ex, prompt, None, a.timeout, leitura=True)
+            onde = pasta
+            if ex["cli"] == "agy":
+                # o agy dispara os hooks do ai-memory com o cwd da sessao; rodando dentro de ~/.maestro/wt o
+                # marcador vale e a leitura nao ensina habitos ao perfil. O projeto entra no workspace por --add-dir
+                onde = os.path.join(CASA, "wt", "_leitura")
+                os.makedirs(onde, exist_ok=True)
+                garantir_marcador(os.path.dirname(onde))
+                cmd += ["--add-dir", pasta]
             inicio = time.time()
             try:
-                r = subprocess.run(cmd, cwd=pasta, env=ambiente(env, pasta, eid), stdin=subprocess.DEVNULL,
+                r = subprocess.run(cmd, cwd=onde, env=ambiente(env, onde, eid), stdin=subprocess.DEVNULL,
                                    capture_output=True, text=True, encoding="utf-8", errors="replace",
                                    timeout=a.timeout + 60)
             except subprocess.TimeoutExpired:
