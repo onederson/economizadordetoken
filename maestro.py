@@ -456,10 +456,14 @@ def montar(ex, prompt, sessao, timeout, leitura=False):
     elif cli == "agy":
         # --disable-slash-commands: sem expansao de skills/comandos no executor (agy >= 1.5); o modo padrao do
         # -p virou Auto no 1.5.7, por isso a autonomia vem explicita do --dangerously-skip-permissions
+        # agy 1.5.12: "--mode plan has no effect while slash command expansion is disabled" -> na leitura o
+        # --disable-slash-commands deixaria o executor escrever no projeto real; plan mode vale mais que as skills
         cmd = [exe, "-p", prompt, "--model", modelo, "--output-format", "json",
-               "--dangerously-skip-permissions", "--disable-slash-commands", "--print-timeout", f"{timeout}s"]
+               "--dangerously-skip-permissions", "--print-timeout", f"{timeout}s"]
         if leitura:
             cmd += ["--mode", "plan"]
+        else:
+            cmd.append("--disable-slash-commands")
         if sessao:
             cmd += ["--conversation", sessao]
     elif cli == "opencode":

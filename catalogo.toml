@@ -16,13 +16,13 @@ bolsos = ["local", "omniroute", "google", "anthropic"]
 
 [rotas]
 implementar = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
-pequena     = ["ollama-gemma4", "ollama-qwen-code", "ollama-gpt-oss", "omni-free-fast", "omni-free-code", "agy-flash-medium", "cc-haiku"]
+pequena     = ["ollama-gemma4", "ollama-qwen-code", "ollama-gpt-oss", "omni-free-fast", "omni-free-code", "agy-flash-medium", "agy-hydrogen-low", "cc-haiku"]
 testes      = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
 refatorar   = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
-docs        = ["ollama-gemma4", "ollama-gpt-oss", "omni-free-fast", "omni-free-code", "agy-flash-medium", "cc-haiku"]
+docs        = ["ollama-gemma4", "ollama-gpt-oss", "omni-free-fast", "omni-free-code", "agy-flash-medium", "agy-hydrogen-low", "cc-haiku"]
 ler         = ["ollama-gemma4", "omni-free-fast", "ollama-qwen-code", "omni-free-code", "agy-flash-low", "cc-haiku"]
-pesquisar   = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-medium", "cc-haiku"]
-dificil     = ["omni-credit-strong", "agy-hydrogen-high", "agy-argon-high", "agy-opus", "cc-sonnet"]
+pesquisar   = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-medium", "agy-hydrogen-low", "cc-haiku"]
+dificil     = ["omni-credit-strong", "agy-hydrogen-high", "agy-neon-high", "agy-argon-high", "agy-opus", "cc-sonnet"]
 
 [ollama-gemma4]
 cli = "ollama"
@@ -99,6 +99,16 @@ fraco = "menos testado aqui"
 
 # Gemini 4 Hydrogen (agy >= 1.5.8): camada rapida do Gemini 4, derivada do Carbon; no "high" passa o Argon em
 # parte dos benchmarks e custa menos. Contexto de 1M. Cota propria no agy (esgota separado do Flash).
+[agy-hydrogen-low]
+cli = "agy"
+modelo = "gemini-4-hydrogen-low"
+cota = "google"
+custo = "barato"
+nivel = 2
+privado = true
+forte = "tarefa pequena e docs quando o flash esta sem cota; raciocina pouco e e rapido"
+fraco = "novo aqui (agy 1.5.12), sem historico de acerto ainda"
+
 [agy-hydrogen-medium]
 cli = "agy"
 modelo = "gemini-4-hydrogen-medium"
@@ -118,6 +128,39 @@ nivel = 3
 privado = true
 forte = "tarefa dificil delegada e consulta de nivel 3 sem gastar Argon/Sonnet/Opus; depuracao com muito contexto"
 fraco = "novo aqui, sem historico de acerto ainda"
+
+# Gemini 4 Neon (agy >= 1.5.12): camada intermediaria do Gemini 4, entre Hydrogen (rapido) e Carbon (topo);
+# quase de fronteira, focada em codigo agentico e raciocinio de varios passos. E planejador do "Orchestrator (Neon)".
+[agy-neon-medium]
+cli = "agy"
+modelo = "gemini-4-neon-medium"
+cota = "google"
+custo = "medio"
+nivel = 3
+privado = true
+forte = "implementacao delicada e revisao de diff; faz menos mudancas nao pedidas"
+fraco = "novo aqui (agy 1.5.12), sem historico de acerto ainda"
+
+[agy-neon-high]
+cli = "agy"
+modelo = "gemini-4-neon-high"
+cota = "google"
+custo = "medio"
+nivel = 3
+privado = true
+forte = "tarefa dificil delegada quando o hydrogen-high nao resolveu; depuracao, teste de hipoteses"
+fraco = "novo aqui (agy 1.5.12), sem historico de acerto ainda"
+
+[agy-neon-xhigh]
+cli = "agy"
+modelo = "gemini-4-neon-xhigh"
+cota = "google"
+custo = "caro"
+nivel = 4
+poupar = true
+privado = true
+forte = "consulta de nivel 4 (arquitetura, causa raiz) antes de gastar o Opus"
+fraco = "raciocina muito: lento; novo aqui, sem historico de acerto ainda"
 
 [agy-hydrogen-xhigh]
 cli = "agy"

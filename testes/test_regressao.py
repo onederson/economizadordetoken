@@ -387,6 +387,17 @@ class TestExecutorSemMemoria(unittest.TestCase):
         self.assertIn("--bare", cmd)
         self.assertIn("ANTHROPIC_BASE_URL", env)
 
+    def test_33_montar_agy_leitura_mantem_plan_mode(self):
+        # agy 1.5.12 ignora --mode plan quando ha --disable-slash-commands: a leitura poderia escrever no projeto
+        modulo = self.importar_maestro()
+        with unittest.mock.patch.object(modulo.shutil, "which", return_value="agy"):
+            ler, _ = modulo.montar({"cli": "agy", "modelo": "m"}, "p", None, 60, leitura=True)
+            exe, _ = modulo.montar({"cli": "agy", "modelo": "m"}, "p", None, 60)
+        self.assertIn("plan", ler)
+        self.assertNotIn("--disable-slash-commands", ler)
+        self.assertIn("--disable-slash-commands", exe)
+        self.assertNotIn("--mode", exe)
+
     def test_25_regras_proibem_delegar(self):
         modulo = self.importar_maestro()
         self.assertIn("nao use a skill maestro", modulo.REGRAS)

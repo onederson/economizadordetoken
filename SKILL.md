@@ -17,8 +17,8 @@ Ferramenta: `python ~/.maestro/maestro.py` (abaixo, `maestro`), rodada pelo seu 
 
 | Nivel | Aguenta | Modelos |
 |---|---|---|
-| 4 | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, Gemini 4 Carbon, GPT de topo |
-| 3 | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Argon, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
+| 4 | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, Gemini 4 Carbon, Gemini 4 Neon xhigh, GPT de topo |
+| 3 | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Argon, Gemini 4 Neon medium/high, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
 | 2 | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, Gemini 4 Hydrogen medium/low, ollama-qwen-code, ollama-gpt-oss, free-code, modelos "mini" |
 | 1 | ler, coletar, extrair fatos, edicao mecanica | Flash low/lite, ollama-gemma4, free-fast, modelos "nano" |
 
@@ -87,7 +87,7 @@ A pergunta precisa se bastar, porque o modelo maior nao viu a sua conversa: o qu
 | Implementar, testes, refatorar | `maestro run --eu <voce> --tipo implementar ...` |
 | Tarefa pequena, docs | `--tipo pequena` / `--tipo docs` |
 | Codigo com segredo ou de cliente | acrescente `--sensivel` (pula so o OmniRoute, mantendo `local`, `agy` e `claude`) |
-| Execucao que exige mais que voce | `--tipo dificil` (credit-strong > Hydrogen high > Argon > Opus no agy > Sonnet); avise o usuario em uma linha |
+| Execucao que exige mais que voce | `--tipo dificil` (credit-strong > Hydrogen high > Neon high > Argon > Opus no agy > Sonnet); avise o usuario em uma linha |
 
 - `--exec a,b,c` forca uma lista propria; use so com motivo (ex.: `maestro sugerir <tipo>` mostra que um executor erra muito nesse tipo).
 - Nunca coloque segredos (chaves, senhas, tokens) em nenhuma tarefa nem consulta.

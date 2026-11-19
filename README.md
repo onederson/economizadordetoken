@@ -84,8 +84,8 @@ Todo modelo do catalogo tem um **nivel** de 1 a 4:
 
 | Nivel | Aguenta | Exemplos |
 |---|---|---|
-| **4** | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, Gemini 4 Carbon, GPT de topo |
-| **3** | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Argon, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
+| **4** | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, Gemini 4 Carbon, Gemini 4 Neon xhigh, GPT de topo |
+| **3** | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Argon, Gemini 4 Neon medium/high, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
 | **2** | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, Gemini 4 Hydrogen medium/low, free-code, modelos 'mini' |
 | **1** | ler, coletar, extrair fatos, edicao mecanica | Flash low/lite, OmniRoute free-fast |
 
@@ -112,7 +112,7 @@ Assim o esquema funciona com **qualquer** modelo no comando: um Opus desce quase
 | CLI | Usado para | Observacao |
 |---|---|---|
 | `opencode` | modelos do **OmniRoute** (gratis e por credito) | precisa do provedor `omniroute` e dos agentes `worker` e `leitor` configurados (exemplo abaixo) |
-| `agy` | Gemini Flash/Hydrogen/Argon e Claude dentro do Antigravity (testado no agy 1.5.9) | usa a cota Google |
+| `agy` | Gemini Flash/Hydrogen/Neon/Argon e Claude dentro do Antigravity (testado no agy 1.5.12) | usa a cota Google |
 | `claude` | Haiku, Sonnet, Opus | usa a sua assinatura do Claude Code |
 
 ### Agentes do opencode
@@ -332,7 +332,7 @@ O que acontece depende de quem chamou:
 | `--horas-cota H` | `5` | por quanto tempo marcar um executor como esgotado |
 | `--max-texto C` | `6000` | limite da resposta de `--leitura` que volta ao orquestrador |
 
-A rota `dificil` (`omni-credit-strong > agy-argon-high > agy-opus > cc-sonnet`) e a unica que ignora o teto do `--eu`: e o caminho explicito para **executar** acima do seu nivel.
+A rota `dificil` (`omni-credit-strong > agy-hydrogen-high > agy-neon-high > agy-argon-high > agy-opus > cc-sonnet`) e a unica que ignora o teto do `--eu`: e o caminho explicito para **executar** acima do seu nivel.
 
 ### `consultar`
 
@@ -369,7 +369,7 @@ bolsos = ["local", "omniroute", "google", "anthropic"]   # ordem de gasto
 [rotas]   # na rota automatica, quem tem taxa de acerto baixa no tipo desce para o fim (ver "Rota por taxa de acerto")
 implementar = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
 ler         = ["ollama-gemma4", "omni-free-fast", "ollama-qwen-code", "omni-free-code", "agy-flash-low", "cc-haiku"]
-dificil     = ["omni-credit-strong", "agy-hydrogen-high", "agy-argon-high", "agy-opus", "cc-sonnet"]
+dificil     = ["omni-credit-strong", "agy-hydrogen-high", "agy-neon-high", "agy-argon-high", "agy-opus", "cc-sonnet"]
 # ... pequena, testes, refatorar, docs, pesquisar
 
 [agy-flash-high]
@@ -396,11 +396,15 @@ Executores que vem no catalogo:
 | `agy-flash-medium` | agy | 2 | google | |
 | `agy-flash-high` | agy | 2 | google | |
 | `agy-gpt-oss` | agy | 2 | google | |
+| `agy-hydrogen-low` | agy | 2 | google | |
 | `agy-hydrogen-medium` | agy | 2 | google | |
 | `agy-hydrogen-high` | agy | 3 | google | |
+| `agy-neon-medium` | agy | 3 | google | |
+| `agy-neon-high` | agy | 3 | google | |
 | `agy-hydrogen-xhigh` | agy | 3 | google | poupar |
 | `agy-argon-high` | agy | 3 | google | poupar |
 | `agy-sonnet` | agy | 3 | google | poupar |
+| `agy-neon-xhigh` | agy | 4 | google | poupar |
 | `agy-opus` | agy | 4 | google | poupar |
 | `cc-haiku` | claude | 2 | anthropic | |
 | `cc-sonnet` | claude | 3 | anthropic | poupar |
