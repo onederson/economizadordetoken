@@ -125,6 +125,16 @@ maestro run --leitura --eu <voce> --dir <projeto> "pergunta de coleta"
 - Tarefas que podem passar de 1 minuto: rode em segundo plano e trabalhe em outra parte enquanto isso. Jobs paralelos sao seguros (cada um tem seu worktree), mas evite dois jobs no mesmo arquivo: a juntada do segundo pode conflitar.
 - Leia so o resumo impresso. O log completo fica em `~/.maestro/jobs/<job>/`, abra apenas para investigar falha.
 
+**Quando o modelo local nao cabe na memoria**, o maestro resolve sozinho, sem gastar token seu: abre uma janela no PC e o usuario marca os apps que pode fechar. Sim: ele fecha e usa o local. Nao, ou sem resposta em 2 min: segue a rota sem o local (linha `pulando ...` no resumo). Nao faca nada com isso.
+
+So se a janela nao abrir (ou com `--sem-janela`) o run para com saida 5 (`PC SEM FOLGA PARA O MODELO LOCAL`), listando os apps. **Nunca feche nada sem o usuario autorizar** (isso vale mesmo com a delegacao automatica liberada):
+
+1. Pergunte ao usuario (AskUserQuestion), citando o modelo, quanto falta e os apps marcados com `*`, com as opcoes: fechar os sugeridos / escolher quais fechar / nao fechar e usar o proximo executor.
+2. Autorizou: `maestro liberar --apps <so os que ele aprovou>` e repita o mesmo `run`. App que nao fechou sozinho (pode estar pedindo para salvar) so vai com `--forcar` se o usuario aceitar perder o que nao foi salvo.
+3. Nao autorizou, ou o relatorio diz que nem fechando tudo cabe: repita o `run` com `--pular-local` (segue a rota sem os locais que nao cabem).
+
+`maestro recursos [--exec ID]` mostra a mesma conta sem rodar nada. Executor lancado pelo maestro nao pode rodar `liberar`.
+
 **Quando o executor trava numa decisao**, ele responde `ESCALAR: <pergunta>` em vez de chutar:
 
 - Voce e maior que ele: a pergunta volta para voce (status `DUVIDA`, saida 4). Responda com `maestro run --continuar <job> "decisao"`. Se a pergunta passa do seu nivel, `maestro consultar` antes.
@@ -137,7 +147,7 @@ maestro run --leitura --eu <voce> --dir <projeto> "pergunta de coleta"
 3. Procure segredos no diff.
 4. Aprovado: `maestro juntar <job>` (aplica no projeto real, sem commit). Rejeitado: `maestro descartar <job>`.
 
-Falhou: `maestro run --continuar <job> "<lista curta e objetiva do que falhou, com saida literal>"` (mesma sessao e worktree). Maximo 3 rodadas. Depois: nivel 3 ou 4 corrige direto no worktree e junta; nivel 1 ou 2 consulta acima com o diff e o erro, ou descarta.
+Falha de verificacao o maestro ja corrige sozinho: devolve a saida ao executor e roda de novo (`--tentativas`, padrao 2; `--orcamento N` limita os tokens do executor), e para quando passa, quando repete a mesma falha ou quando o job chega a 3 rodadas. Voce so le o resumo final (linha `correcao automatica:`). Se ele diz `correcao automatica parou`, nao mande "tente de novo": `maestro run --continuar <job> "<o que mudar, com saida literal>"` com uma instrucao nova (mesma sessao e worktree). Maximo 3 rodadas. Depois: nivel 3 ou 4 corrige direto no worktree e junta; nivel 1 ou 2 consulta acima com o diff e o erro, ou descarta.
 
 Se a parte exige um nivel acima do seu para **conferir** (ex.: voce e 2 e o diff mexe em concorrencia), suba a revisao: `maestro consultar --eu <voce> --dir <worktree> "revise o diff contra a tarefa: ..."`.
 
@@ -146,6 +156,10 @@ Se a parte exige um nivel acima do seu para **conferir** (ex.: voce e 2 e o diff
 Um resumo final ao usuario: o que foi feito, por quem (executor), o que foi consultado acima e a quem, o resultado da verificacao e o que ficou pendente. Commit so se o usuario pedir.
 
 Ao fim de uma tarefa longa, `maestro ganho --dias 1`: mostra quanto os executores processaram, quanto voltou para voce e onde se perdeu (job descartado, 3 rodadas, delegacao pequena demais, pedido repetido). Se apontar perda, diga ao usuario em uma linha e ajuste a proxima triagem.
+
+Mudanca nesta skill, no catalogo ou nas rotas so fica se `maestro ganho --dias 7 --comparar` mostrar melhora (1a rodada ok, rodadas por job, juntado, tokens do orquestrador por job). Junte as mudancas e aplique de vez em quando: reescrever a skill a cada sessao invalida o cache do prompt.
+
+Contexto longo: em vez de compactar no meio, feche a fase (tarefa juntada e verificada), registre o que falta e comece a proxima fase com o contexto limpo. Compactar no meio do trabalho custa tokens e perde detalhe.
 
 ## Comandos
 
@@ -157,6 +171,6 @@ Ao fim de uma tarefa longa, `maestro ganho --dias 1`: mostra quanto os executore
 | `maestro jobs` | jobs com worktree aberto |
 | `maestro cota <id> --horas 120` / `--liberar` | marcar/liberar cota manualmente |
 | `maestro sugerir [tipo]` | taxa de acerto por executor |
-| `maestro ganho [--dias 30]` | tokens processados pelos executores, o que voltou, onde se perdeu |
+| `maestro ganho [--dias 30] [--comparar]` | tokens processados pelos executores, o que voltou, onde se perdeu; `--comparar` poe o periodo lado a lado com o anterior |
 
 Adicionar executor: edite `~/.maestro/catalogo.toml` (cli `claude`, `ollama`, `agy` ou `opencode`; `nivel` de 1 a 4).

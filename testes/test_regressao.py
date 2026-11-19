@@ -1,6 +1,9 @@
+import contextlib
 import importlib.util
+import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,7 +31,7 @@ class TestGuarda(unittest.TestCase):
             "USERPROFILE": self.temp_dir,
         })
         self.patcher.start()
-        for k in ("MAESTRO_EU", "MAESTRO_GUARDA", "MAESTRO_LIMITE_AVISO", "MAESTRO_LIMITE_PARADA"):
+        for k in ("MAESTRO_EU", "MAESTRO_PROFUNDIDADE", "MAESTRO_GUARDA", "MAESTRO_LIMITE_AVISO", "MAESTRO_LIMITE_PARADA"):
             if k in os.environ:
                 del os.environ[k]
 
@@ -218,7 +221,7 @@ class TestInstalar(unittest.TestCase):
             "USERPROFILE": self.temp_dir,
         })
         self.patcher.start()
-        for k in ("MAESTRO_EU", "MAESTRO_GUARDA", "MAESTRO_LIMITE_AVISO", "MAESTRO_LIMITE_PARADA"):
+        for k in ("MAESTRO_EU", "MAESTRO_PROFUNDIDADE", "MAESTRO_GUARDA", "MAESTRO_LIMITE_AVISO", "MAESTRO_LIMITE_PARADA"):
             if k in os.environ:
                 del os.environ[k]
 
@@ -316,6 +319,16 @@ class TestInstalar(unittest.TestCase):
         self.assertEqual(res.returncode, 0)
         self.assertIn("additionalContext", res.stdout)
 
+    def test_52_skills_validar_instaladas(self):
+        self.rodar_instalar()
+        for mod, nome_esperado in (("opus", "claudevalidateopus"), ("fable", "claudevalidatefable")):
+            caminho_skill = os.path.join(self.claude_dir, "skills", nome_esperado, "SKILL.md")
+            self.assertTrue(os.path.exists(caminho_skill), f"Skill {nome_esperado} nao existe em {caminho_skill}")
+            with open(caminho_skill, encoding="utf-8") as f:
+                conteudo = f.read()
+            self.assertIn(f"name: {nome_esperado}", conteudo)
+            self.assertNotIn("{modelo}", conteudo)
+
 
 class TestExecutorSemMemoria(unittest.TestCase):
     def setUp(self):
@@ -325,7 +338,7 @@ class TestExecutorSemMemoria(unittest.TestCase):
             "USERPROFILE": self.temp_dir,
         })
         self.patcher.start()
-        for k in ("MAESTRO_EU", "MAESTRO_GUARDA", "MAESTRO_LIMITE_AVISO", "MAESTRO_LIMITE_PARADA"):
+        for k in ("MAESTRO_EU", "MAESTRO_PROFUNDIDADE", "MAESTRO_GUARDA", "MAESTRO_LIMITE_AVISO", "MAESTRO_LIMITE_PARADA"):
             if k in os.environ:
                 del os.environ[k]
 
@@ -519,12 +532,569 @@ class TestRotaPorAcerto(unittest.TestCase):
         self.assertEqual(execs, ["flash", "gratis"])
         self.assertIn("TAREFA ORIGINAL", texto)
         self.assertIn("conserte X", texto)
-        # pago que falhou, rodada que passou ou lista explicita: mesmo executor, so a correcao
-        for jj, cc, auto in ((dict(j, exec_usado="flash"), cat, True), (dict(j, falhou=None), cat, True), (j, cat, False)):
+        # pago que falhou, rodada que passou ou lista explicita: mesmo executor (ele vai primeiro), so a correcao
+        for jj, cc, auto, esperado in ((dict(j, exec_usado="flash"), cat, True, ["flash", "gratis"]),
+                                       (dict(j, falhou=None), cat, True, ["gratis", "flash"]),
+                                       (j, cat, False, ["gratis", "flash"])):
             execs, texto = modulo.correcao(jj, ["gratis", "flash"], cc, "conserte X", auto)
-            self.assertEqual(execs, ["gratis", "flash"])
+            self.assertEqual(execs, esperado)
             self.assertNotIn("TAREFA ORIGINAL", texto)
+        # --exec com outro executor, sem a sessao de quem comecou: recebe a tarefa original
+        execs, texto = modulo.correcao(dict(j, falhou=None), ["flash"], cat, "conserte X", False)
+        self.assertEqual(execs, ["flash"])
+        self.assertIn("TAREFA ORIGINAL", texto)
+
+
+class TestGanhoComparar(unittest.TestCase):
+    setUp = TestExecutorSemMemoria.setUp
+    tearDown = TestExecutorSemMemoria.tearDown
+    importar_maestro = TestExecutorSemMemoria.importar_maestro
+
+    def historico(self, eventos):
+        with open(os.path.join(self.temp_dir, ".maestro", "historico.jsonl"), "a", encoding="utf-8") as f:
+            for e in eventos:
+                f.write(json.dumps(e) + "\n")
+
+    def test_34_indicadores_exemplo(self):
+        modulo = self.importar_maestro()
+        ev = [
+            {"evento": "run", "job": "A", "rodada": 1, "verificacao": False, "tarefa_c": 400, "devolvido_c": 400},
+            {"evento": "run", "job": "A", "rodada": 2, "verificacao": True, "tarefa_c": 400, "devolvido_c": 400},
+            {"evento": "run", "job": "B", "rodada": 1, "verificacao": True, "tarefa_c": 400, "devolvido_c": 400},
+            {"evento": "juntar", "job": "A"},
+            {"evento": "descartar", "job": "B"},
+        ]
+        res = modulo.indicadores(ev)
+        self.assertEqual(res, {
+            "jobs": 2,
+            "primeira_ok": 50,
+            "rodadas_media": 1.5,
+            "juntado": 50,
+            "custo_por_juntado": 600,
+        })
+
+    def test_35_indicadores_vazio(self):
+        modulo = self.importar_maestro()
+        res = modulo.indicadores([])
+        self.assertEqual(res, {
+            "jobs": 0,
+            "primeira_ok": None,
+            "rodadas_media": None,
+            "juntado": None,
+            "custo_por_juntado": None,
+        })
+
+    def test_36_ganho_comparar(self):
+        import argparse
+        import contextlib
+        import io
+        import time
+
+        modulo = self.importar_maestro()
+        agora = time.time()
+        d_ant = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(agora - 10 * 86400))
+        d_atu = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(agora - 2 * 86400))
+
+        ev_ant = [
+            {"evento": "run", "job": "pA", "exec": "agy-flash-high", "rodada": 1, "verificacao": False, "tarefa_c": 1000, "devolvido_c": 1000, "tokens_in": 100, "tokens_out": 100, "data": d_ant},
+            {"evento": "run", "job": "pA", "exec": "agy-flash-high", "rodada": 2, "verificacao": True, "tarefa_c": 1000, "devolvido_c": 1000, "tokens_in": 100, "tokens_out": 100, "data": d_ant},
+            {"evento": "juntar", "job": "pA", "data": d_ant},
+            {"evento": "run", "job": "pB", "exec": "agy-flash-high", "rodada": 1, "verificacao": False, "tarefa_c": 1000, "devolvido_c": 1000, "tokens_in": 100, "tokens_out": 100, "data": d_ant},
+            {"evento": "descartar", "job": "pB", "data": d_ant},
+        ]
+        ev_atu = [
+            {"evento": "run", "job": "cA", "exec": "agy-flash-high", "rodada": 1, "verificacao": True, "tarefa_c": 400, "devolvido_c": 400, "tokens_in": 100, "tokens_out": 100, "data": d_atu},
+            {"evento": "juntar", "job": "cA", "data": d_atu},
+            {"evento": "run", "job": "cB", "exec": "agy-flash-high", "rodada": 1, "verificacao": True, "tarefa_c": 400, "devolvido_c": 400, "tokens_in": 100, "tokens_out": 100, "data": d_atu},
+            {"evento": "juntar", "job": "cB", "data": d_atu},
+        ]
+        self.historico(ev_ant + ev_atu)
+
+        a = argparse.Namespace(cmd="ganho", dias=7.0, comparar=True)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            modulo.cmd_ganho(a)
+        out = buf.getvalue()
+
+        self.assertIn("COMPARACAO (ultimos 7 dias x 7 dias anteriores)", out)
+        self.assertIn("melhor", out)
+
+    def test_37_ganho_comparar_dias_zero(self):
+        import argparse
+        import contextlib
+        import io
+
+        modulo = self.importar_maestro()
+        a = argparse.Namespace(cmd="ganho", dias=0.0, comparar=True)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            modulo.cmd_ganho(a)
+        out = buf.getvalue()
+        self.assertIn("--comparar precisa de --dias maior que 0", out)
+        self.assertNotIn("COMPARACAO", out)
+
+
+class TestCorrecaoAutomatica(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.patcher = unittest.mock.patch.dict(os.environ, {
+            "HOME": self.temp_dir,
+            "USERPROFILE": self.temp_dir,
+        })
+        self.patcher.start()
+        for k in ("MAESTRO_EU", "MAESTRO_PROFUNDIDADE", "MAESTRO_GUARDA", "MAESTRO_LIMITE_AVISO", "MAESTRO_LIMITE_PARADA"):
+            if k in os.environ:
+                del os.environ[k]
+        os.makedirs(os.path.join(self.temp_dir, ".maestro"), exist_ok=True)
+        self.repo = os.path.join(self.temp_dir, "repo")
+        os.makedirs(self.repo, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=self.repo, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=self.repo, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=self.repo, capture_output=True, check=True)
+        with open(os.path.join(self.repo, "valor.txt"), "w", encoding="utf-8") as f:
+            f.write("inicial")
+        subprocess.run(["git", "add", "."], cwd=self.repo, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=self.repo, capture_output=True, check=True)
+
+    def tearDown(self):
+        self.patcher.stop()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def importar_maestro(self):
+        spec = importlib.util.spec_from_file_location("maestro", CAMINHO_MAESTRO)
+        modulo = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(modulo)
+        return modulo
+
+    def rodar_run(self, valores, extras=None, verif=None):
+        modulo = self.importar_maestro()
+        cat = {"fake": {"cli": "claude", "nivel": 2, "cota": "anthropic", "custo": "baixo"}}
+        chamadas = [0]
+        vals = list(valores)
+
+        def falso_executar(j, execs, cat_arg, a_arg, passo=0):
+            chamadas[0] += 1
+            if vals:
+                v = vals.pop(0)
+                with open(os.path.join(j["wt"], "valor.txt"), "w", encoding="utf-8") as f:
+                    f.write(v)
+            return {
+                "exec": "fake",
+                "sessao": None,
+                "texto": "RESULTADO: ok",
+                "tin": 10,
+                "tout": 5,
+                "erro": None,
+                "rc": 0,
+                "estourou": False,
+            }
+
+        if verif is None:
+            cmd_verif = (
+                f'"{sys.executable}" -c "import sys; '
+                "v=open('valor.txt').read().strip(); "
+                "print('erro: valor', v); "
+                "sys.exit(0 if v=='certo' else 1)\""
+            )
+        else:
+            cmd_verif = verif
+
+        argv = [
+            "maestro.py",
+            "run",
+            "--exec",
+            "fake",
+            "--dir",
+            self.repo,
+            "--tipo",
+            "implementar",
+            "--verificar",
+            cmd_verif,
+        ]
+        if extras:
+            argv.extend(extras)
+        argv.append("tarefa de teste com texto suficiente para passar na validacao de tamanho")
+
+        buf = io.StringIO()
+        codigo = None
+        with unittest.mock.patch.object(modulo, "catalogo", return_value=cat), \
+             unittest.mock.patch.object(modulo, "esgotados", return_value={}), \
+             unittest.mock.patch.object(modulo, "executar", side_effect=falso_executar), \
+             unittest.mock.patch.object(sys, "argv", argv), \
+             contextlib.redirect_stdout(buf):
+            try:
+                modulo.main()
+            except SystemExit as e:
+                codigo = e.code
+
+        return codigo, chamadas[0], buf.getvalue(), modulo
+
+    def test_38_correcao_automatica_passa_segunda_rodada(self):
+        codigo, chamadas, out, modulo = self.rodar_run(["errado", "certo"])
+        self.assertEqual(codigo, 0)
+        self.assertEqual(chamadas, 2)
+        self.assertIn("correcao automatica:", out)
+        self.assertIn("OK", out)
+
+        with open(modulo.HISTORICO, encoding="utf-8") as f:
+            runs = [json.loads(line) for line in f if '"evento": "run"' in line]
+        self.assertEqual(len(runs), 2)
+        r1, r2 = runs[0], runs[1]
+        self.assertEqual(r1["rodada"], 1)
+        self.assertFalse(r1["verificacao"])
+        self.assertFalse(r1["auto"])
+        self.assertGreater(r1["tarefa_c"], 0)
+
+        self.assertEqual(r2["rodada"], 2)
+        self.assertTrue(r2["verificacao"])
+        self.assertTrue(r2["auto"])
+        self.assertEqual(r2["tarefa_c"], 0)
+
+    def test_39_correcao_automatica_para_sem_progresso(self):
+        codigo, chamadas, out, _ = self.rodar_run(["errado", "errado", "errado"])
+        self.assertEqual(codigo, 3)
+        self.assertEqual(chamadas, 2)
+        self.assertIn("sem progresso", out)
+
+    def test_40_correcao_automatica_tentativas_zero(self):
+        codigo, chamadas, out, _ = self.rodar_run(["errado"], extras=["--tentativas", "0"])
+        self.assertEqual(codigo, 3)
+        self.assertEqual(chamadas, 1)
+        self.assertNotIn("correcao automatica", out)
+
+    def test_41_correcao_automatica_orcamento_atingido(self):
+        codigo, chamadas, out, _ = self.rodar_run(["errado", "certo"], extras=["--orcamento", "10"])
+        self.assertEqual(codigo, 3)
+        self.assertEqual(chamadas, 1)
+        self.assertIn("orcamento", out)
+
+    def test_42_correcao_automatica_limite_tres_rodadas(self):
+        codigo, chamadas, out, _ = self.rodar_run(["e1", "e2", "e3", "e4"], extras=["--tentativas", "5"])
+        self.assertEqual(codigo, 3)
+        self.assertEqual(chamadas, 3)
+        self.assertIn("3 rodadas", out)
+
+    def test_43_correcao_automatica_sem_mudanca_no_worktree(self):
+        cmd_verif = f'"{sys.executable}" -c "pass"'
+        codigo, chamadas, out, _ = self.rodar_run([], verif=cmd_verif)
+        self.assertEqual(codigo, 3)
+        self.assertEqual(chamadas, 2)
+        self.assertIn("nao alterou nenhum arquivo", out)
+
+    def test_44_assinatura_ignora_tempos_e_distingue_erros(self):
+        modulo = self.importar_maestro()
+        s1 = modulo.assinatura("FAILED test_x in 0.12s")
+        s2 = modulo.assinatura("FAILED test_x in 0.40s")
+        self.assertEqual(s1, s2)
+        e1 = modulo.assinatura("AssertionError: 1 != 2")
+        e2 = modulo.assinatura("AssertionError: 1 != 3")
+        self.assertNotEqual(e1, e2)
+
+
+class TestValidar(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.patcher = unittest.mock.patch.dict(os.environ, {
+            "HOME": self.temp_dir,
+            "USERPROFILE": self.temp_dir,
+        })
+        self.patcher.start()
+        for k in ("MAESTRO_EU", "MAESTRO_PROFUNDIDADE", "MAESTRO_GUARDA", "MAESTRO_LIMITE_AVISO", "MAESTRO_LIMITE_PARADA"):
+            if k in os.environ:
+                del os.environ[k]
+        os.makedirs(os.path.join(self.temp_dir, ".maestro"), exist_ok=True)
+        self.repo = os.path.join(self.temp_dir, "repo")
+        os.makedirs(self.repo, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=self.repo, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=self.repo, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=self.repo, capture_output=True, check=True)
+        self.arq = os.path.join(self.repo, "a.py")
+        with open(self.arq, "w", encoding="utf-8") as f:
+            f.write("def foo():\n    return 1\n")
+        subprocess.run(["git", "add", "."], cwd=self.repo, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=self.repo, capture_output=True, check=True)
+
+        with open(self.arq, "w", encoding="utf-8") as f:
+            f.write("def foo():\n    return 2\n")
+
+    def tearDown(self):
+        self.patcher.stop()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def importar_maestro(self):
+        spec = importlib.util.spec_from_file_location("maestro", CAMINHO_MAESTRO)
+        modulo = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(modulo)
+        return modulo
+
+    def rodar_validar(self, pedido, resposta_texto="", extras=None, erro=None):
+        modulo = self.importar_maestro()
+        chamadas = []
+
+        def falso_perguntar(execs, cat, template, texto, pasta, a):
+            chamadas.append((execs, cat, template, texto, pasta, a))
+            eid = execs[0] if execs else "validar-opus"
+            return (eid, resposta_texto, 100, 50, erro, 2.0)
+
+        argv = ["maestro.py", "validar", "--dir", self.repo]
+        if extras:
+            argv.extend(extras)
+        if pedido is not None:
+            argv.append(pedido)
+
+        buf = io.StringIO()
+        codigo = None
+        with unittest.mock.patch.object(modulo, "perguntar", side_effect=falso_perguntar), \
+             unittest.mock.patch.object(sys, "argv", argv), \
+             contextlib.redirect_stdout(buf):
+            try:
+                modulo.main()
+            except SystemExit as e:
+                codigo = e.code
+
+        return codigo, chamadas, buf.getvalue(), modulo
+
+    def test_45_validar_reprovado(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        resp = "VEREDITO: REPROVADO\nPROBLEMAS: 1. [bloqueia] a.py:1 x"
+        codigo, chamadas, out, modulo = self.rodar_validar(pedido, resposta_texto=resp)
+        self.assertEqual(codigo, 3)
+        self.assertEqual(len(chamadas), 1)
+
+        texto_passado = chamadas[0][3]
+        self.assertIn(pedido, texto_passado)
+        m = re.search(r"Diff completo \([^)]+\): (.*?diff\.patch)", texto_passado)
+        self.assertIsNotNone(m, f"caminho de diff.patch nao encontrado no texto: {texto_passado}")
+        caminho_diff = m.group(1).strip()
+        self.assertTrue(os.path.isfile(caminho_diff), f"diff.patch nao existe em {caminho_diff}")
+        with open(caminho_diff, encoding="utf-8") as f:
+            conteudo_diff = f.read()
+        self.assertIn("return 2", conteudo_diff)
+
+        with open(modulo.HISTORICO, encoding="utf-8") as f:
+            vals = [json.loads(line) for line in f if '"evento": "validacao"' in line]
+        self.assertEqual(len(vals), 1)
+        self.assertEqual(vals[0]["veredito"], "REPROVADO")
+        self.assertEqual(vals[0]["exec"], "validar-opus")
+
+    def test_46_validar_aprovado_e_ressalvas(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        c1, _, _, _ = self.rodar_validar(pedido, resposta_texto="VEREDITO: **APROVADO COM RESSALVAS**\nRESUMO: ok")
+        self.assertEqual(c1, 0)
+        c2, _, _, _ = self.rodar_validar(pedido, resposta_texto="VEREDITO: APROVADO\nRESUMO: tudo certo")
+        self.assertEqual(c2, 0)
+
+    def test_47_validar_sem_veredito(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        codigo, _, out, _ = self.rodar_validar(pedido, resposta_texto="RESUMO: apenas resumo sem veredito")
+        self.assertEqual(codigo, 1)
+        self.assertIn("trate como nao validado", out)
+
+    def test_48_validar_repo_sem_mudanca(self):
+        with open(self.arq, "w", encoding="utf-8") as f:
+            f.write("def foo():\n    return 1\n")
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        codigo, chamadas, out, _ = self.rodar_validar(pedido, resposta_texto="VEREDITO: APROVADO")
+        self.assertEqual(len(chamadas), 0)
+        self.assertIn("nada mudou", str(codigo) + out)
+
+    def test_49_validar_pedido_curto(self):
+        codigo, chamadas, _, _ = self.rodar_validar("pedido curto")
+        self.assertEqual(len(chamadas), 0)
+
+    def test_50_validar_modelo_fable(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        codigo, chamadas, _, _ = self.rodar_validar(pedido, resposta_texto="VEREDITO: APROVADO", extras=["--modelo", "fable"])
+        self.assertEqual(len(chamadas), 1)
+        execs, cat, _, _, _, _ = chamadas[0]
+        self.assertEqual(execs, ["validar-fable"])
+        self.assertEqual(cat["validar-fable"]["modelo"], "claude-fable-5-2")
+        self.assertEqual(cat["validar-fable"]["esforco"], "medium")
+
+    def test_51_montar_validador_opus(self):
+        modulo = self.importar_maestro()
+        with unittest.mock.patch.object(modulo.shutil, "which", return_value="claude"):
+            cmd, env = modulo.montar(modulo.VALIDADORES["opus"], "prompt teste", None, 60, leitura=True)
+        self.assertIn("--effort", cmd)
+        self.assertIn("medium", cmd)
+        self.assertIn("--model", cmd)
+        self.assertIn("claude-opus-5-5", cmd)
+        self.assertIn("--disallowedTools", cmd)
+
+
+class TestJuntar(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.patcher = unittest.mock.patch.dict(os.environ, {
+            "HOME": self.temp_dir,
+            "USERPROFILE": self.temp_dir,
+        })
+        self.patcher.start()
+        for k in ("MAESTRO_EU", "MAESTRO_PROFUNDIDADE", "MAESTRO_GUARDA", "MAESTRO_LIMITE_AVISO", "MAESTRO_LIMITE_PARADA"):
+            if k in os.environ:
+                del os.environ[k]
+        os.makedirs(os.path.join(self.temp_dir, ".maestro"), exist_ok=True)
+        self.repo = os.path.join(self.temp_dir, "repo")
+        os.makedirs(self.repo, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=self.repo, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=self.repo, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=self.repo, capture_output=True, check=True)
+        subprocess.run(["git", "config", "diff.context", "35"], cwd=self.repo, capture_output=True, check=True)
+
+        self.linhas = [f"linha {i}\n" for i in range(1, 31)]
+        self.arq = os.path.join(self.repo, "arquivo.txt")
+        with open(self.arq, "w", encoding="utf-8") as f:
+            f.writelines(self.linhas)
+        subprocess.run(["git", "add", "."], cwd=self.repo, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=self.repo, capture_output=True, check=True)
+
+    def tearDown(self):
+        self.patcher.stop()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def importar_maestro(self):
+        spec = importlib.util.spec_from_file_location("maestro", CAMINHO_MAESTRO)
+        modulo = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(modulo)
+        return modulo
+
+    def test_53_juntar_projeto_alterado(self):
+        modulo = self.importar_maestro()
+        job_id = "job_juntar_teste"
+        wt, base, aviso = modulo.criar_worktree(self.repo, job_id)
+        j = {
+            "job": job_id,
+            "repo": self.repo,
+            "wt": wt,
+            "base": base,
+            "rodada": 1,
+            "exec_usado": "fake",
+            "tipo": "implementar",
+        }
+        modulo.salvar_job(j)
+
+        # executor altera a linha 2 do arquivo no worktree
+        with open(os.path.join(wt, "arquivo.txt"), "r", encoding="utf-8") as f:
+            wt_linhas = f.readlines()
+        wt_linhas[1] = "linha 2 alterada\n"
+        with open(os.path.join(wt, "arquivo.txt"), "w", encoding="utf-8") as f:
+            f.writelines(wt_linhas)
+
+        # antes de juntar, altera sem commitar a linha 29 do mesmo arquivo no repo real
+        with open(self.arq, "r", encoding="utf-8") as f:
+            repo_linhas = f.readlines()
+        repo_linhas[28] = "linha 29 alterada\n"
+        with open(self.arq, "w", encoding="utf-8") as f:
+            f.writelines(repo_linhas)
+
+        buf = io.StringIO()
+        with unittest.mock.patch.object(sys, "argv", ["maestro.py", "juntar", job_id]), \
+             contextlib.redirect_stdout(buf):
+            modulo.main()
+
+        out = buf.getvalue()
+        self.assertIn("contexto reduzido", out)
+
+        with open(self.arq, encoding="utf-8") as f:
+            conteudo_final = f.read()
+        self.assertIn("linha 2 alterada", conteudo_final)
+        self.assertIn("linha 29 alterada", conteudo_final)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _carregar_maestro():
+    spec = importlib.util.spec_from_file_location("maestro_folga", CAMINHO_MAESTRO)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+class TestFolgaLocal(unittest.TestCase):
+    """Modelo local que nao cabe: para com saida 5 (ninguem fecha nada sozinho) ou, com --pular-local, sai da lista."""
+
+    def setUp(self):
+        self.m = _carregar_maestro()
+        GB = self.m.GB
+        self.cat = {"ollama-grande": {"cli": "ollama", "modelo": "grande:1"},
+                    "ollama-pequeno": {"cli": "ollama", "modelo": "pequeno:1"},
+                    "agy-x": {"cli": "agy", "modelo": "flash"}}
+        tamanhos = {"grande:1": 20 * GB, "pequeno:1": 2 * GB}
+        self.mem = (8 * GB, 32 * GB, 4 * GB, 16 * GB)  # RAM livre, total, VRAM livre, total
+
+        def api(url, rota):
+            return [] if rota == "ps" else [{"name": n, "size": s} for n, s in tamanhos.items()]
+        for alvo, valor in (("garantir_ollama", lambda url: True), ("_ollama_api", api),
+                            ("memoria_livre", lambda: self.mem), ("apps_liberaveis", lambda: {})):
+            p = unittest.mock.patch.object(self.m, alvo, valor)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_nao_cabe_para_com_saida_5(self):
+        with self.assertRaises(SystemExit) as c, unittest.mock.patch("builtins.print"):
+            self.m.checar_locais(["ollama-grande", "agy-x"], self.cat, pular=False, janela=False)
+        self.assertEqual(c.exception.code, 5)
+
+    def test_pular_local_tira_so_quem_nao_cabe(self):
+        with unittest.mock.patch("builtins.print"):
+            fica = self.m.checar_locais(["ollama-grande", "ollama-pequeno", "agy-x"], self.cat, pular=True)
+        self.assertEqual(fica, ["ollama-pequeno", "agy-x"])
+
+    def test_cabe_ou_nao_local_segue_igual(self):
+        self.assertEqual(self.m.checar_locais(["ollama-pequeno", "agy-x"], self.cat, False), ["ollama-pequeno", "agy-x"])
+        self.assertEqual(self.m.checar_locais(["agy-x", "ollama-grande"], self.cat, False), ["agy-x", "ollama-grande"])
+
+    def test_modelo_ja_carregado_cabe(self):
+        with unittest.mock.patch.object(self.m, "_ollama_api", lambda url, rota: [{"name": "grande:1", "size": 1}]):
+            self.assertTrue(self.m.folga_local(self.cat["ollama-grande"])["cabe"])
+
+    def _janela(self, resposta, marcados=()):
+        p = unittest.mock.patch.object(self.m, "janela_liberar", lambda *a, **k: (resposta, list(marcados), False))
+        p.start()
+        self.addCleanup(p.stop)
+        for alvo in ("registrar", "fechar_apps"):
+            q = unittest.mock.patch.object(self.m, alvo, unittest.mock.MagicMock())
+            q.start()
+            self.addCleanup(q.stop)
+
+    def test_janela_nao_ou_sem_resposta_segue_sem_fechar(self):
+        for resp in ("nao", "tempo"):
+            self._janela(resp)
+            with unittest.mock.patch("builtins.print"):
+                fica = self.m.checar_locais(["ollama-grande", "ollama-pequeno", "agy-x"], self.cat, False)
+            self.assertEqual(fica, ["ollama-pequeno", "agy-x"])
+            self.m.fechar_apps.assert_not_called()
+
+    def test_janela_autorizou_fecha_so_os_marcados_e_usa_local(self):
+        self._janela("fechar", ["chrome"])
+        GB = self.m.GB
+
+        def fechou(*a):
+            self.mem = (30 * GB, 32 * GB, 4 * GB, 16 * GB)  # depois de fechar, cabe
+        self.m.fechar_apps.side_effect = fechou
+        with unittest.mock.patch("builtins.print"):
+            fica = self.m.checar_locais(["ollama-grande", "agy-x"], self.cat, False)
+        self.m.fechar_apps.assert_called_once_with(["chrome"], False)
+        self.assertEqual(fica, ["ollama-grande", "agy-x"])
+
+    def test_sem_janela_cai_na_saida_5(self):
+        self._janela("sem_janela")
+        with self.assertRaises(SystemExit) as c, unittest.mock.patch("builtins.print"):
+            self.m.checar_locais(["ollama-grande", "agy-x"], self.cat, False)
+        self.assertEqual(c.exception.code, 5)
+
+
+class TestAppsLiberaveis(unittest.TestCase):
+    def test_protege_sistema_terminal_e_a_propria_cadeia(self):
+        m = _carregar_maestro()
+        eu, pai = os.getpid(), 999001
+        MB = 1024 ** 2
+        procs = [(eu, pai, "python.exe", 50 * MB, 1), (pai, 4, "Code.exe", 900 * MB, 1),
+                 (999002, pai, "Code.exe", 300 * MB, 1), (999003, 1, "chrome.exe", 800 * MB, 1),
+                 (999004, 1, "chrome.exe", 400 * MB, 1), (999005, 1, "svchost.exe", 900 * MB, 1),
+                 (999006, 1, "Servico.exe", 900 * MB, 0), (999007, 1, "claude.exe", 900 * MB, 1)]
+        apps = m.apps_liberaveis(procs)
+        self.assertEqual(list(apps), ["chrome"])  # Code e ancestral; svchost/claude protegidos; sessao 0 e servico
+        self.assertEqual(sorted(apps["chrome"][1]), [999003, 999004])

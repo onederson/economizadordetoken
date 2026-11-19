@@ -23,14 +23,15 @@ Sao dois pecas:
 6. [Primeiros passos](#primeiros-passos)
 7. [Ciclo de vida de um job](#ciclo-de-vida-de-um-job)
 8. [Escalada: quando o executor trava](#escalada-quando-o-executor-trava)
-9. [Referencia de comandos](#referencia-de-comandos)
-10. [O catalogo](#o-catalogo)
-11. [Como o maestro economiza token (sem ficar burro)](#como-o-maestro-economiza-token-sem-ficar-burro)
-12. [Seguranca](#seguranca)
-13. [Usando de qualquer CLI](#usando-de-qualquer-cli)
-14. [Dados e arquivos](#dados-e-arquivos)
-15. [Limitacoes conhecidas](#limitacoes-conhecidas)
-16. [Inspiracoes](#inspiracoes)
+9. [Validar: revisao de senior com Opus ou Fable](#validar-revisao-de-senior-com-opus-ou-fable)
+10. [Referencia de comandos](#referencia-de-comandos)
+11. [O catalogo](#o-catalogo)
+12. [Como o maestro economiza token (sem ficar burro)](#como-o-maestro-economiza-token-sem-ficar-burro)
+13. [Seguranca](#seguranca)
+14. [Usando de qualquer CLI](#usando-de-qualquer-cli)
+15. [Dados e arquivos](#dados-e-arquivos)
+16. [Limitacoes conhecidas](#limitacoes-conhecidas)
+17. [Inspiracoes](#inspiracoes)
 
 ---
 
@@ -257,7 +258,9 @@ Comando(s) e resultado esperado.
   |
   v
  maestro roda --verificar no worktree ──> OK / FALHOU pelo exit code
-  |
+  |        |
+  |        +── FALHOU ──> correcao automatica: a falha volta ao executor e ele tenta de novo
+  |                       (ate --tentativas, mesma falha 2x, 3 rodadas no job ou --orcamento)
   v
  resumo curto ──> voce confere: diff --stat, diff
   |
@@ -267,10 +270,11 @@ Comando(s) e resultado esperado.
 ```
 
 - **`--verificar` substitui o "aprovado" do executor.** Modelos baratos as vezes dizem que testaram sem testar; o exit code nao mente.
+- **Loop de verificacao sem custo para quem orquestra.** Se o `--verificar` falha, o proprio maestro devolve a saida enxuta ao executor, com a instrucao de nao apagar nem enfraquecer testes, e roda de novo. Para quando passa, quando a falha se repete igual (sem progresso; tempos, enderecos e numeros de linha nao contam como diferenca), quando o job chega a 3 rodadas, quando acabam as `--tentativas` (padrao 2) ou quando o executor estoura o `--orcamento` de tokens. Quem orquestra le so o resumo final: `correcao automatica: r1 omni-free-code FALHOU -> r2 agy-flash-high OK`. Cada rodada entra no historico (o `sugerir` continua contando o acerto na 1a rodada) e as automaticas com custo zero para o orquestrador.
 - **`--continuar` reaproveita a sessao** do executor (`--resume` no Claude, `--conversation` no agy, `--session` no opencode): ele nao rele o projeto do zero. Testado nos tres CLIs.
 - **Gratis que falhou cede a correcao.** Com `--exec auto`, se a rodada anterior de um executor gratis (local/omniroute) deu `ERRO`, `TIMEOUT` ou verificacao reprovada, o `--continuar` manda a correcao para o proximo da rota, junto com a tarefa original (ele nao tem a sessao de quem comecou) e o trabalho parcial no worktree. Executor pago que falhou segue na mesma sessao.
 - **Fallback de cota:** se o executor responde com erro de cota (429, `quota`, `rate limit`, `insufficient credit`...), o maestro marca ele como esgotado por `--horas-cota` horas (padrao 5) e tenta o proximo da lista, sozinho.
-- **Jobs paralelos** sao seguros (cada um tem seu worktree); so evite dois jobs mexendo no mesmo arquivo, porque a juntada do segundo pode conflitar (o maestro tenta `git apply --3way` antes de desistir).
+- **Jobs paralelos** sao seguros (cada um tem seu worktree); so evite dois jobs mexendo no mesmo arquivo, porque a juntada do segundo pode conflitar (o maestro tenta `git apply --3way` e, se o arquivo tambem mudou no projeto real enquanto o job rodava, `git apply -C1`, com 1 linha de contexto, antes de desistir; nesse caso avisa para conferir o diff).
 - **Maximo recomendado: 3 rodadas.** Depois disso, quem orquestra corrige direto no worktree e junta, consulta acima ou descarta.
 
 ---
@@ -298,6 +302,44 @@ O que acontece depende de quem chamou:
 
 ---
 
+## Validar: revisao de senior com Opus ou Fable
+
+Trabalhou com um modelo menor (agy com Argon ou Flash, Claude com Haiku, um modelo local...) e quer saber se esta mesmo certo? Digite **`/claudevalidateopus`** ou **`/claudevalidatefable`** na sessao, com um foco opcional depois do comando (`/claudevalidateopus confira a migracao do banco`).
+
+A skill faz o modelo da sessao, seja qual for, juntar o que voce pediu (com as suas palavras) e rodar:
+
+```
+maestro validar --modelo opus|fable --dir PROJ --tarefa pedido.md [--base REF | --job JOB] [--verificar "cmd"]
+```
+
+O maestro grava o diff completo em `~/.maestro/validacoes/<id>/` e chama o **Claude Opus 5.5** ou o **Claude Fable 5.2** com **esforco medio**, so leitura, no papel de um engenheiro senior com 50 anos de experiencia. Ele confere, nesta ordem: se o pedido foi atendido por inteiro, se o codigo esta correto (bordas, erros, quem chama o que mudou), se os testes existem e testam de verdade (ele roda os testes), e regressoes, seguranca, segredos e sobras. A resposta tem no maximo 40 linhas:
+
+```
+VEREDITO: REPROVADO
+RESUMO: o filtro por data foi feito, mas a paginacao quebrou.
+PROBLEMAS:
+1. [bloqueia] api/lista.py:88 offset calculado antes do filtro; a pagina 2 repete itens. Aplicar o filtro antes.
+2. [menor] testes/test_lista.py nao cobre lista vazia.
+CONFERIDO: pytest -q -> 41 passed, 1 failed (test_paginacao); li api/lista.py e quem chama listar().
+```
+
+| Opcao | Padrao | O que faz |
+|---|---|---|
+| `texto` ou `--tarefa ARQ` | obrigatorio | o que o usuario pediu; sem isso o revisor nao tem contra o que julgar |
+| `--modelo opus\|fable` | `opus` | `claude-opus-5-5` ou `claude-fable-5-2`, sempre com `--effort medium` |
+| `--base REF` | `HEAD` | revisa as mudancas desde essa ref, mais arquivos novos. Padrao: o que nao foi commitado. Trabalho ja commitado: `--base HEAD~2`, `--base main` |
+| `--job JOB` | | revisa o worktree de um job do maestro antes de juntar (a tarefa entregue ao executor vai junto) |
+| `--verificar "cmd"` | | roda antes e manda o resultado ao revisor |
+| `--timeout S` | `1500` | |
+
+Saida: **0** aprovado (com ou sem ressalvas), **3** reprovado, **1** erro ou resposta sem `VEREDITO`, **2** timeout. Toda validacao entra no historico (`ganho` mostra o gasto).
+
+- Os dois revisores ficam **fora do catalogo** de proposito: o `consultar` e as rotas nunca gastam Opus ou Fable sozinhos.
+- As skills tem `disable-model-invocation`: so voce dispara, porque cada validacao gasta um modelo de topo.
+- O Fable 5.2 exige creditos de uso na conta. Sem eles, o maestro trata como cota esgotada e sugere `--modelo opus`.
+
+---
+
 ## Referencia de comandos
 
 | Comando | Para que |
@@ -306,13 +348,16 @@ O que acontece depende de quem chamou:
 | `maestro rota --eu N [--tipo T] [--sensivel]` | quem esta abaixo/igual e acima de voce, ja na ordem que o `run` vai usar (avisa quem desceu por taxa de acerto). Nao gasta nada |
 | `maestro run ...` | delegar (ver abaixo) |
 | `maestro consultar --eu N "duvida"` | subir uma decisao para o modelo mais barato acima de voce |
+| `maestro validar --modelo opus\|fable "pedido"` | revisao de senior do trabalho feito (ver [Validar](#validar-revisao-de-senior-com-opus-ou-fable)) |
 | `maestro diff JOB [--stat] [--arquivo CAMINHO] [--max 400]` | o que o executor mudou |
 | `maestro juntar JOB` | aplica no projeto real (sem commit) e apaga o worktree |
 | `maestro descartar JOB` | apaga o worktree sem aplicar |
 | `maestro jobs` | jobs com worktree aberto |
 | `maestro cota ID --horas 120` / `--liberar` | marcar ou liberar cota esgotada manualmente |
 | `maestro sugerir [tipo]` | taxa de acerto por executor e tipo (verificacao OK, OK de primeira, juntado) |
-| `maestro ganho [--dias 30]` | resumo da economia (tokens que nao passaram pelo orquestrador, ja descontado o custo de mandar a tarefa e ler a resposta), tokens por executor, quanto voltou, onde se perdeu. `--dias 0` = todo o historico |
+| `maestro recursos [--exec ID]` | a RAM + VRAM livres comportam o modelo ollama? Quanto falta e quais apps liberariam memoria. O `run` faz essa conta sozinho antes de usar um executor local e, se nao cabe, abre uma janela para o usuario marcar o que fechar (sem resposta em 2 min: nao fecha nada e segue a rota). Sem janela (ou `--sem-janela`), para com saida 5 |
+| `maestro liberar --apps a,b [--forcar]` | fecha so os apps listados (pedido normal de fechar; `--forcar` mata o que ficou aberto). Rode **somente depois de o usuario autorizar**; sistema, terminal, sessoes de IA e o ollama sao protegidos. Sem autorizacao: `run ... --pular-local` |
+| `maestro ganho [--dias 30] [--comparar]` | resumo da economia (tokens que nao passaram pelo orquestrador, ja descontado o custo de mandar a tarefa e ler a resposta), tokens por executor, quanto voltou, onde se perdeu. `--dias 0` = todo o historico; `--comparar` compara o periodo com o anterior de mesmo tamanho |
 
 ### `run`
 
@@ -328,6 +373,9 @@ O que acontece depende de quem chamou:
 | `--continuar JOB` | | nova rodada no mesmo job (mesma sessao e worktree) |
 | `--sensivel` | | pula executores externos (`privado = false`, o OmniRoute) |
 | `--escalar N` | `1` | consultas automaticas acima por rodada |
+| `--tentativas N` | `2` | correcoes automaticas quando o `--verificar` falha (`0` desliga) |
+| `--pode-nao-mudar` | | verificacao OK sem nenhuma alteracao conta como OK (tarefa de so confirmar ou diagnosticar); sem ela, job que nao alterou nada e falha |
+| `--orcamento T` | `0` | tokens do executor no job; atingido, a correcao automatica para (`0` = sem limite) |
 | `--timeout S` | `1800` | limite do executor, em segundos |
 | `--horas-cota H` | `5` | por quanto tempo marcar um executor como esgotado |
 | `--max-texto C` | `6000` | limite da resposta de `--leitura` que volta ao orquestrador |
@@ -429,6 +477,7 @@ Economizar token cortando informacao e facil; o dificil e cortar **sem** que o o
 | **Diff com teto** | `diff` para em 400 linhas e avisa | o resto se le por arquivo (`--arquivo`) ou inteiro (`--max 0`); diff cortado nao conta como conferido |
 | **Resposta longa guardada** | leitura ou consulta acima do limite volta com inicio + fim + caminho do texto completo | nada se perde: o completo fica em `~/.maestro/respostas/` |
 | **Avisos antes de gastar** | `run` avisa quando a tarefa sai sem arquivo citado, sem `--verificar` ou pequena demais para valer a delegacao; `consultar` avisa quando a pergunta e vaga | aviso nao bloqueia |
+| **Correcao automatica** | verificacao reprovada volta ao executor sem passar pelo orquestrador (ver [Ciclo de vida de um job](#ciclo-de-vida-de-um-job)) | para em 3 rodadas, na mesma falha repetida ou no `--orcamento` |
 | **Sessao reaproveitada** | `--continuar` retoma a sessao do executor em vez de abrir outra que releria tudo | |
 | **Rota por taxa de acerto** | na rota automatica, o executor com menos da metade dos jobs juntados naquele tipo (minimo 5 encerrados, ultimos 30 dias) vai para o fim da fila; `maestro rota` mostra quem desceu e por que | token gratis que vira descarte custa token caro de revisao; o rebaixado continua de reserva e volta quando o historico envelhece |
 | **Executor Claude enxuto** | o Haiku/Sonnet roda com `--strict-mcp-config --disable-slash-commands` (sem servidores MCP e sem skills) | numa leitura simples, a entrada caiu de ~100-157 mil para ~60 mil tokens (tarefas diferentes, comparacao aproximada) |
@@ -478,6 +527,9 @@ onde se perdeu:
 
 - **Cache de respostas repetidas:** uma leitura de log mudaria sem o cache perceber, e resposta velha e exatamente o "ficar burro". O `ganho` so conta repeticoes.
 - **Compressao por modelo de ML / proxy na frente da API:** pesado e redundante com o rtk.
+- **Compactar o contexto em 40% (ou 60% em tarefa grande):** avaliado em 2026-11-19. Compactar gasta tokens para gerar o resumo, perde detalhe (caminhos, saidas literais) e invalida o cache do prompt, e contexto em cache sai por ~10% do preco. Um hook tambem nao sabe se a tarefa e "grande". O que fica: fechar a fase (job juntado e verificado), registrar o que falta e comecar a proxima com o contexto limpo. Delegar a leitura pesada ao maestro ja mantem o contexto de quem orquestra pequeno.
+- **Skill que se reescreve sozinha:** avaliado em 2026-11-19. Sem uma metrica que julgue, o texto so cresce (fica mais caro a cada carga), piora sem ninguem ver e quebra o cache do prompt a cada sessao. O que fica: o aprendizado automatico e a rota por taxa de acerto (dado, nao texto), e mudanca na skill, no catalogo ou nas rotas so permanece se `maestro ganho --dias 7 --comparar` mostrar melhora.
+- **Agente "orquestrador" e pasta `memoria/` dentro do projeto:** a sessao principal ja e o orquestrador; um agente a mais repetiria o contexto. Memoria ja ha (ai-memory e a memoria do Claude Code); uma terceira geraria contradicao.
 - **Passar a saida da verificacao pelo `rtk pipe`:** testado em 2026-11-14 com o rtk 1.2.0: com o pytest ausente, a saida "No module named pytest" virou "Pytest: No tests collected", escondendo o erro real. O `enxugar` do maestro preserva as linhas de erro, entao fica ele.
 
 ---

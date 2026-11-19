@@ -23,6 +23,15 @@ for pasta in SKILLS:
     os.makedirs(pasta, exist_ok=True)
     shutil.copy2(os.path.join(AQUI, "SKILL.md"), pasta)
     print("skill  ->", pasta)
+    # /claudevalidateopus e /claudevalidatefable: revisao de senior pelo 'maestro.py validar'
+    with open(os.path.join(AQUI, "validar-skill.md"), encoding="utf-8") as f:
+        modelo_skill = f.read()
+    for modelo, nome in (("opus", "Opus 5.5"), ("fable", "Fable 5.2")):
+        destino = os.path.join(os.path.dirname(pasta), f"claudevalidate{modelo}")
+        os.makedirs(destino, exist_ok=True)
+        with open(os.path.join(destino, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write(modelo_skill.replace("{modelo}", modelo).replace("{Nome}", nome))
+        print("skill  ->", destino)
 
 # Guarda: hooks do Claude Code que cobram a decisao de delegar (ver guarda.py). --sem-guarda remove.
 shutil.copy2(os.path.join(AQUI, "guarda.py"), CASA)

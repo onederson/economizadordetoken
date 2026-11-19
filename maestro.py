@@ -14,7 +14,8 @@ Uso:
   maestro.py jobs                              jobs abertos
   maestro.py cota ID --horas 120 | --liberar   marca ou libera cota esgotada
   maestro.py sugerir [tipo]                    taxa de acerto por executor (historico)
-  maestro.py ganho [--dias 30]                 quanto os executores processaram, quanto voltou, onde se perdeu
+  maestro.py ganho [--dias 30] [--comparar]    quanto os executores processaram, quanto voltou, onde se perdeu
+  maestro.py validar --modelo opus|fable "o que foi pedido" [--base REF | --job JOB]   revisao de senior; so leitura
 
 Niveis (qualquer modelo pode orquestrar; --eu e o seu id no catalogo ou o seu nivel de 1 a 4):
   maestro.py rota --eu cc-haiku [--tipo implementar]         quem fica abaixo/igual e quem fica acima de voce
@@ -24,7 +25,17 @@ Niveis (qualquer modelo pode orquestrar; --eu e o seu id no catalogo ou o seu ni
   (saida 4); senao o maestro consulta um modelo acima e continua a mesma sessao (--escalar N, padrao 1).
 
 Dados em ~/.maestro (estado.json, historico.jsonl, jobs/, wt/).
-Saida do run: 0 ok, 1 erro, 2 timeout, 3 verificacao falhou, 4 executor parou com duvida.
+Se o --verificar falha, o maestro devolve a falha ao executor e roda de novo (--tentativas, padrao 2), ate
+passar, repetir a mesma falha, chegar a 3 rodadas no job ou estourar o --orcamento de tokens.
+Saida do run: 0 ok, 1 erro, 2 timeout, 3 verificacao falhou, 4 executor parou com duvida,
+5 modelo local nao cabe e nao deu para abrir a janela (pergunte ao usuario; ver abaixo).
+
+Modelo local (ollama): antes de rodar, o maestro confere RAM + VRAM livres. Se nao cabe, abre uma janela para o
+usuario marcar o que fechar (sem resposta em 2 min = nao fecha nada e segue a rota). Sem janela (ou --sem-janela),
+para com saida 5 e lista os apps. NUNCA feche nada sem o usuario autorizar a lista:
+  maestro.py recursos [--exec ID]              cabe ou nao, quanto falta, apps que liberariam memoria
+  maestro.py liberar --apps chrome,discord     fecha so esses (graceful; --forcar mata o que nao fechou)
+  maestro.py run ... --pular-local             usuario nao autorizou: segue para o proximo executor da rota
 """
 import argparse, collections, hashlib, json, os, re, secrets, shutil, subprocess, sys, time, tomllib, urllib.error, urllib.request
 
@@ -43,7 +54,7 @@ SINAL_RE = re.compile(r"error|erro\b|fail|falh|exception|traceback|assert|panic|
 ARQ_RE = re.compile(r"`[^`]+`|[\w./\\-]+\.[A-Za-z]{1,5}\b")
 VAZIA_RE = re.compile(r"^Ran 0 tests?\b|\bNO TESTS RAN\b|\bno tests ran\b|\bcollected 0 items\b|\bNo tests found\b|"
                       r"\bno test files\b|^0 passing\b", re.I | re.M)
-COTA_RE = re.compile(r"\b40[23]\b|insufficient (?:credit|balance|quota)|out of credits|no credits? (?:left|remaining)|payment required|all models? (?:failed|unavailable)|\b429\b|RESOURCE_EXHAUSTED|quota|rate.?limit|usage limit|exhausted|limite de uso|compaction\.failed", re.I)
+COTA_RE = re.compile(r"\b40[23]\b|insufficient (?:credit|balance|quota)|out of credits|requires usage credits|no credits? (?:left|remaining)|payment required|all models? (?:failed|unavailable)|\b429\b|RESOURCE_EXHAUSTED|quota|rate.?limit|usage limit|exhausted|limite de uso|compaction\.failed", re.I)
 
 LEITURA = (
     "Voce coleta informacao para outro modelo. Leia o arquivo {arq} e faca o que ele pede. "
@@ -60,6 +71,34 @@ CONSULTA = (
     "MOTIVO (1 a 3 linhas), PASSOS numerados com arquivo e funcao, RISCOS. Nao imprima chaves ou tokens. "
     "Nao use a skill maestro nem chame maestro.py."
 )
+
+VALIDA = (
+    "Voce e um engenheiro de software senior com mais de 50 anos de experiencia. Outro modelo fez um trabalho e "
+    "voce decide, com provas, se esta certo ou errado antes de ele ser entregue. Leia o arquivo {arq}: tem o que o "
+    "usuario pediu, o que foi alterado e onde esta o diff completo. A pasta do projeto e: {pasta}. Confira, nesta "
+    "ordem: 1) o pedido foi atendido por inteiro? Cada requisito, nas palavras do usuario; o que falta; o que foi "
+    "feito sem ser pedido. 2) o codigo esta correto? Logica, casos de borda, erros tratados, concorrencia, e se "
+    "combina com o resto do projeto (leia quem chama o que mudou). 3) testes: existem para o que mudou e testam de "
+    "verdade, nao so passam? Rode os testes e verificacoes do projeto e cite o resultado literal. 4) regressoes, "
+    "seguranca, segredos no diff, sobras (debug, temporarios, TODO). NAO altere nenhum arquivo: voce so julga. Nao "
+    "confie no que o outro modelo disse que fez: confira no codigo. Nao aprove por educacao nem reprove por gosto; "
+    "estilo so conta se causar bug ou confusao real. Responda em no maximo 40 linhas, neste formato:\n"
+    "VEREDITO: APROVADO | APROVADO COM RESSALVAS | REPROVADO (REPROVADO se houver qualquer problema [bloqueia])\n"
+    "RESUMO: 1 a 2 linhas\n"
+    "PROBLEMAS: numerados, cada um com [bloqueia|importante|menor], caminho:linha, o que esta errado e como "
+    "corrigir; ou 'nenhum'\n"
+    "CONFERIDO: comandos que rodou com o resultado literal e o que leu\n"
+    "Nao imprima chaves ou tokens. Nao use a skill maestro nem chame maestro.py."
+)
+
+# Revisores do 'validar': fora do catalogo de proposito, para o consultar e as rotas nunca gastarem eles sozinhos
+VALIDADORES = {
+    "opus": {"cli": "claude", "modelo": "claude-opus-5-5", "esforco": "medium", "cota": "anthropic", "custo": "caro",
+             "nivel": 4, "privado": True},
+    "fable": {"cli": "claude", "modelo": "claude-fable-5-2", "esforco": "medium", "cota": "anthropic", "custo": "caro",
+              "nivel": 4, "privado": True},
+}
+VEREDITO_RE = re.compile(r"VEREDITO:\W*(APROVADO COM RESSALVAS|APROVADO|REPROVADO)", re.I)
 
 REGRAS = (
     "Voce e um executor. Leia o arquivo " + TAREFA + " nesta pasta e execute exatamente o que ele pede. "
@@ -170,6 +209,7 @@ ACERTO_MIN = 0.5      # abaixo disso o executor vai para o fim da rota daquele t
 ACERTO_AMOSTRA = 5    # jobs encerrados antes de julgar alguem
 ACERTO_DIAS = 30      # so o recente conta, para um executor rebaixado poder voltar quando o historico envelhece
 GRATIS = ("local", "omniroute")
+RODADAS_MAX = 3  # rodadas por job somando as automaticas; dali em diante quem decide e o orquestrador
 
 
 def acerto(tipo, dias=ACERTO_DIAS):
@@ -400,6 +440,405 @@ def garantir_ollama(url="http://127.0.0.1:11434"):
     return False
 
 
+# ---------- folga do PC para modelo local ----------
+# Antes de um executor ollama rodar, o maestro confere se a RAM + VRAM livres comportam o modelo. Se nao comportam,
+# abre uma janela e o proprio usuario marca o que pode fechar (zero token do orquestrador); sem resposta, nada e
+# fechado e a rota segue. Sem janela possivel, o run para com saida 5 e quem orquestra pergunta. Nada e fechado
+# sem o usuario autorizar.
+GB = 1024 ** 3
+FOLGA_SO = 2.5 * GB      # o que fica reservado ao sistema e aos apps que continuam abertos
+JANELA_ESPERA = 120      # segundos que a janela espera; sem resposta = nao fechar nada
+PROTEGIDOS = {  # nunca entram na lista de fechar: sistema, shell, sessoes de IA e o proprio ollama
+    "system", "idle", "registry", "smss", "csrss", "wininit", "winlogon", "services", "lsass", "lsaiso", "svchost",
+    "dwm", "explorer", "fontdrvhost", "sihost", "ctfmon", "taskhostw", "runtimebroker", "searchhost", "searchindexer",
+    "startmenuexperiencehost", "shellexperiencehost", "textinputhost", "lockapp", "memory compression", "audiodg",
+    "conhost", "openconsole", "windowsterminal", "wt", "pwsh", "powershell", "cmd", "bash", "sh", "zsh", "python",
+    "python3", "pythonw", "py", "ollama", "ollama app", "ollama_llama_server", "llama-server", "claude", "agy",
+    "antigravity", "codex", "opencode", "ai-memory", "msmpeng", "mpdefendercoreservice", "securityhealthsystray",
+    "securityhealthservice", "nvcontainer", "nvdisplay.container", "spoolsv", "wudfhost", "dllhost", "smartscreen",
+    "systemd", "init", "kthreadd", "launchd", "kernel_task", "windowserver", "loginwindow", "xorg", "gnome-shell",
+    "plasmashell", "sshd", "login", "tmux", "screen",
+}
+
+
+def _nome_proc(nome):
+    n = (nome or "").strip().lower()
+    return n[:-4] if n.endswith(".exe") else n
+
+
+def memoria_livre():
+    """(ram_livre, ram_total, vram_livre, vram_total) em bytes; vram 0 sem GPU NVIDIA."""
+    ram_livre = ram_total = 0
+    if os.name == "nt":
+        import ctypes
+
+        class _Mem(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        m = _Mem()
+        m.dwLength = ctypes.sizeof(_Mem)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+            ram_livre, ram_total = m.ullAvailPhys, m.ullTotalPhys
+    elif os.path.exists("/proc/meminfo"):
+        info = {}
+        with open("/proc/meminfo") as f:
+            for l in f:
+                k, _, v = l.partition(":")
+                info[k] = int(v.split()[0]) * 1024
+        ram_livre, ram_total = info.get("MemAvailable", info.get("MemFree", 0)), info.get("MemTotal", 0)
+    else:  # macOS
+        try:
+            ram_total = int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True).stdout)
+            vm = subprocess.run(["vm_stat"], capture_output=True, text=True).stdout
+            pag = int(re.search(r"page size of (\d+)", vm).group(1))
+            ram_livre = sum(int(re.search(rf"{k}:\s+(\d+)", vm).group(1)) for k in ("Pages free", "Pages inactive")) * pag
+        except Exception:
+            pass
+    vram_livre = vram_total = 0
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free,memory.total", "--format=csv,noheader,nounits"],
+                                 capture_output=True, text=True, timeout=10).stdout
+            for l in out.strip().splitlines():
+                livre, total = (int(x.strip()) * 1024 ** 2 for x in l.split(","))
+                vram_livre, vram_total = vram_livre + livre, vram_total + total
+        except Exception:
+            pass
+    return ram_livre, ram_total, vram_livre, vram_total
+
+
+def processos():
+    """[(pid, ppid, nome, memoria_bytes, sessao)] da maquina."""
+    if os.name == "nt":
+        ps = ("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,SessionId "
+              "| ConvertTo-Json -Compress")
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True,
+                                 text=True, encoding="utf-8", errors="replace", timeout=60).stdout
+            dados = json.loads(out or "[]")
+        except Exception:
+            return []
+        if isinstance(dados, dict):
+            dados = [dados]
+        return [(d["ProcessId"], d["ParentProcessId"], d.get("Name") or "", int(d.get("WorkingSetSize") or 0),
+                 d.get("SessionId")) for d in dados]
+    try:
+        out = subprocess.run(["ps", "-eo", "pid=,ppid=,rss=,comm="], capture_output=True, text=True, timeout=30).stdout
+    except Exception:
+        return []
+    lista = []
+    for l in out.splitlines():
+        partes = l.split(None, 3)
+        if len(partes) == 4:
+            lista.append((int(partes[0]), int(partes[1]), os.path.basename(partes[3]), int(partes[2]) * 1024, 1))
+    return lista
+
+
+def _ancestrais(procs):
+    """PIDs desta cadeia (maestro -> terminal/sessao que o chamou): fechar um deles derrubaria a propria tarefa."""
+    pai = {p[0]: p[1] for p in procs}
+    vistos, pid = set(), os.getpid()
+    while pid and pid not in vistos:
+        vistos.add(pid)
+        pid = pai.get(pid)
+    return vistos
+
+
+def apps_liberaveis(procs=None, minimo=150 * 1024 ** 2):
+    """{app: (memoria_total, [pids])} dos apps que podem ser fechados, do maior para o menor."""
+    procs = processos() if procs is None else procs
+    anc = _ancestrais(procs)
+    nomes_anc = {_nome_proc(p[2]) for p in procs if p[0] in anc}
+    grupos = {}
+    for pid, _, nome, mem, sessao in procs:
+        n = _nome_proc(nome)
+        if not n or pid in anc or n in PROTEGIDOS or n in nomes_anc or sessao == 0 or pid == 0:
+            continue
+        g = grupos.setdefault(n, [0, []])
+        g[0] += mem
+        g[1].append(pid)
+    return dict(sorted(((n, (m, p)) for n, (m, p) in grupos.items() if m >= minimo), key=lambda x: -x[1][0]))
+
+
+def _ollama_api(url, rota):
+    try:
+        with urllib.request.urlopen(f"{url.rstrip('/')}/api/{rota}", timeout=5) as r:
+            return json.load(r).get("models") or []
+    except Exception:
+        return []
+
+
+def _mesmo_modelo(a, b):
+    a, b = a.lower(), b.lower()
+    return (a if ":" in a else a + ":latest") == (b if ":" in b else b + ":latest")
+
+
+def folga_local(ex, mem=None):
+    """Cabe o modelo do executor ollama agora? Devolve dict com cabe (True/False/None = nao deu para medir),
+    precisa, livre, falta e detalhes."""
+    url = ex.get("url") or os.environ.get("OLLAMA_API_URL", "http://127.0.0.1:11434")
+    modelo = ex["modelo"]
+    r = {"modelo": modelo, "cabe": None, "precisa": 0, "livre": 0, "falta": 0}
+    if not garantir_ollama(url):
+        r["motivo"] = "servidor ollama indisponivel"
+        return r
+    carregados = _ollama_api(url, "ps")
+    if any(_mesmo_modelo(m.get("name", ""), modelo) for m in carregados):
+        r.update(cabe=True, motivo="modelo ja carregado na memoria")
+        return r
+    tam = next((m.get("size", 0) for m in _ollama_api(url, "tags") if _mesmo_modelo(m.get("name", ""), modelo)), 0)
+    if not tam:
+        r["motivo"] = "modelo nao encontrado no 'ollama list'"
+        return r
+    ram_livre, ram_total, vram_livre, vram_total = mem or memoria_livre()
+    outros = sum(m.get("size", 0) for m in carregados)  # o ollama descarrega modelos ociosos para abrir espaco
+    precisa = int(tam * 1.15 + 1 * GB)  # pesos + cache de contexto e buffers
+    livre = max(0, ram_livre - FOLGA_SO) + vram_livre + outros
+    r.update(precisa=precisa, livre=livre, falta=max(0, precisa - livre), cabe=livre >= precisa,
+             ram_livre=ram_livre, ram_total=ram_total, vram_livre=vram_livre, vram_total=vram_total,
+             outros_modelos=outros)
+    if r["cabe"] and vram_total and vram_livre + outros < tam * 0.5:
+        r["aviso"] = "cabe, mas mais da metade fica na RAM: vai rodar lento"
+    return r
+
+
+def _gb(n):
+    return f"{n / GB:.1f} GB"
+
+
+def sugerir_apps(apps, falta):
+    """Menor lista (dos maiores para os menores) que cobre o que falta. Devolve (nomes, memoria somada)."""
+    nomes, soma = [], 0
+    for nome, (m, _) in apps.items():
+        if soma >= falta:
+            break
+        nomes.append(nome)
+        soma += m
+    return nomes, soma
+
+
+def relatorio_folga(eid, f, apps=None):
+    linhas = [f"{eid} ({f['modelo']}): " + ("CABE" if f["cabe"] else "NAO CABE" if f["cabe"] is False else "sem medida")
+              + (f" - {f['motivo']}" if f.get("motivo") else "")]
+    if f.get("precisa"):
+        linhas.append(f"  precisa ~{_gb(f['precisa'])}; livre {_gb(f['livre'])} = RAM {_gb(f['ram_livre'])} de "
+                      f"{_gb(f['ram_total'])} (menos {_gb(FOLGA_SO)} do sistema) + VRAM {_gb(f['vram_livre'])} de "
+                      f"{_gb(f['vram_total'])}" + (f" + outros modelos ollama {_gb(f['outros_modelos'])}" if f["outros_modelos"] else ""))
+    if f.get("aviso"):
+        linhas.append(f"  aviso: {f['aviso']}")
+    if f["cabe"] is False and apps is not None:
+        sugeridos, soma = sugerir_apps(apps, f["falta"])
+        linhas.append(f"  falta {_gb(f['falta'])}. Apps que podem ser fechados (memoria em uso):")
+        for nome, (m, pids) in list(apps.items())[:15]:
+            linhas.append(f"    {'*' if nome in sugeridos else ' '} {nome:28} {_gb(m):>9}  ({len(pids)} processo(s))")
+        if soma < f["falta"]:
+            linhas.append("  mesmo fechando tudo da lista nao sobra o suficiente: use outro executor (--pular-local)")
+        else:
+            linhas.append(f"  * = minimo sugerido (~{_gb(soma)}). Com autorizacao do usuario: "
+                          f"maestro.py liberar --apps {','.join(sugeridos)}")
+    return "\n".join(linhas)
+
+
+def janela_liberar(eid, f, apps, proximo, espera=JANELA_ESPERA):
+    """Pergunta ao usuario numa janela, sem passar pelo orquestrador (zero token).
+    Devolve (resposta, apps_marcados, forcar); resposta: 'fechar' | 'nao' | 'tempo' | 'sem_janela'."""
+    try:
+        import tkinter as tk
+        raiz = tk.Tk()
+    except Exception:
+        return "sem_janela", [], False
+    sugeridos, soma = sugerir_apps(apps, f["falta"])
+    res = {"r": "tempo"}
+    raiz.title("maestro: memoria para o modelo local")
+    raiz.attributes("-topmost", True)
+    raiz.resizable(False, False)
+    caixa = tk.Frame(raiz, padx=16, pady=12)
+    caixa.pack()
+    tk.Label(caixa, justify="left", anchor="w", wraplength=440, text=(
+        f"O modelo local {f['modelo']} precisa de ~{_gb(f['precisa'])}, mas so ha {_gb(f['livre'])} livres "
+        f"(faltam {_gb(f['falta'])}).\n\nMarque o que pode ser fechado. Os apps recebem o pedido normal de fechar "
+        "e podem perguntar se voce quer salvar.")).pack(anchor="w")
+    if soma < f["falta"]:
+        tk.Label(caixa, fg="#b00020", justify="left", wraplength=440,
+                 text="Mesmo fechando tudo da lista talvez nao sobre o suficiente.").pack(anchor="w", pady=(6, 0))
+    marcas = {}
+    lista = tk.Frame(caixa, pady=8)
+    lista.pack(anchor="w")
+    for nome, (m, pids) in list(apps.items())[:12]:
+        v = tk.BooleanVar(value=nome in sugeridos)
+        tk.Checkbutton(lista, variable=v, text=f"{nome}  ({_gb(m)}, {len(pids)} processo(s))").pack(anchor="w")
+        marcas[nome] = v
+    forcar = tk.BooleanVar(value=False)
+    tk.Checkbutton(caixa, variable=forcar, text="Forcar o que nao fechar sozinho (perde o que nao foi salvo)").pack(anchor="w")
+    relogio = tk.Label(caixa, fg="#555")
+    relogio.pack(anchor="w", pady=(8, 0))
+    botoes = tk.Frame(caixa, pady=10)
+    botoes.pack(fill="x")
+
+    def responder(r):
+        res["r"] = r
+        raiz.destroy()
+
+    tk.Button(botoes, text="Fechar marcados e usar o modelo local", command=lambda: responder("fechar")).pack(side="left")
+    tk.Button(botoes, text=f"Nao fechar (usar {proximo})", command=lambda: responder("nao")).pack(side="right")
+    raiz.protocol("WM_DELETE_WINDOW", lambda: responder("nao"))
+    fim = time.time() + espera
+
+    def contar():
+        resta = int(fim - time.time())
+        if resta <= 0:
+            return responder("tempo")
+        relogio.config(text=f"Sem resposta em {resta}s, segue sem fechar nada (usa {proximo}).")
+        raiz.after(1000, contar)
+
+    contar()
+    try:
+        raiz.lift()
+        raiz.focus_force()
+        raiz.mainloop()
+    except Exception:
+        return "sem_janela", [], False
+    if res["r"] != "fechar":
+        return res["r"], [], False
+    return "fechar", [n for n, v in marcas.items() if v.get()], bool(forcar.get())
+
+
+def fechar_apps(pedidos, forcar=False):
+    """Fecha os apps pedidos (so os liberaveis). Use SOMENTE com autorizacao do usuario. Devolve a memoria
+    livre antes e depois."""
+    procs = processos()
+    apps = apps_liberaveis(procs, minimo=0)
+    antes = memoria_livre()
+    fechados, recusados = [], []
+    for nome in pedidos:
+        if nome not in apps:
+            recusados.append(nome)
+            continue
+        pids = apps[nome][1]
+        if os.name == "nt":
+            # sem /F o Windows pede para a janela fechar (o app pode salvar); /T ficaria de fora de proposito:
+            # derrubaria filhos que talvez sejam o terminal desta sessao
+            subprocess.run(["taskkill"] + [x for p in pids for x in ("/PID", str(p))], capture_output=True)
+        else:
+            import signal
+            for p in pids:
+                try:
+                    os.kill(p, signal.SIGTERM)
+                except OSError:
+                    pass
+        fechados.append((nome, pids))
+    for _ in range(16):  # ate ~8 s para os apps fecharem sozinhos
+        vivos = {p[0] for p in processos()} if fechados else set()
+        if not any(p in vivos for _, pids in fechados for p in pids):
+            break
+        time.sleep(0.5)
+    vivos = {p[0] for p in processos()} if fechados else set()
+    for nome, pids in fechados:
+        resta = [p for p in pids if p in vivos]
+        if resta and forcar:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F"] + [x for p in resta for x in ("/PID", str(p))], capture_output=True)
+            else:
+                import signal
+                for p in resta:
+                    try:
+                        os.kill(p, signal.SIGKILL)
+                    except OSError:
+                        pass
+            print(f"{nome}: forcado ({len(resta)} processo(s) nao fecharam sozinhos)")
+        elif resta:
+            print(f"{nome}: {len(resta)} processo(s) continuam abertos (talvez pedindo para salvar)")
+        else:
+            print(f"{nome}: fechado")
+    for nome in recusados:
+        print(f"{nome}: ignorado (nao esta aberto ou e protegido: sistema, terminal, sessoes de IA, ollama)")
+    time.sleep(2 if fechados else 0)  # a memoria demora um pouco para voltar ao sistema
+    depois = memoria_livre()
+    print(f"RAM livre {_gb(antes[0])} -> {_gb(depois[0])}; VRAM livre {_gb(antes[2])} -> {_gb(depois[2])}")
+    registrar({"evento": "liberar", "apps": [n for n, _ in fechados], "ram_ganha": depois[0] - antes[0],
+               "vram_ganha": depois[2] - antes[2]})
+    return antes, depois
+
+
+def _sem_locais_que_nao_cabem(execs, cat, folgas, motivo):
+    fica = [e for e in execs if folgas.get(e, {}).get("cabe") is not False]
+    for e in execs:
+        if e not in fica:
+            print(f"pulando {e}: o PC nao tem memoria livre para {cat[e]['modelo']} ({motivo})")
+    if not fica:
+        sys.exit("nenhum executor sobrou depois de tirar os locais que nao cabem")
+    return fica
+
+
+def checar_locais(execs, cat, pular, janela=True):
+    """Antes de rodar: se o primeiro executor da lista e ollama e o modelo nao cabe na memoria livre, pergunta
+    ao usuario numa janela se pode fechar apps (sem gastar token do orquestrador). Sim: fecha os marcados e usa o
+    local; nao ou sem resposta em JANELA_ESPERA s: segue a rota sem os locais que nao cabem. Sem janela possivel
+    (ou --sem-janela): para com saida 5 e o orquestrador pergunta. --pular-local: nem pergunta.
+    Devolve a lista de executores a usar."""
+    if not execs or cat[execs[0]]["cli"] != "ollama":
+        return execs
+    mem = memoria_livre()
+    folgas = {e: folga_local(cat[e], mem) for e in execs if cat[e]["cli"] == "ollama"}
+    primeiro = folgas[execs[0]]
+    if primeiro["cabe"] is not False:
+        if primeiro.get("aviso"):
+            print(f"AVISO: {execs[0]}: {primeiro['aviso']}")
+        return execs
+    if pular:
+        return _sem_locais_que_nao_cabem(execs, cat, folgas, "--pular-local")
+    apps = apps_liberaveis()
+    if janela and os.environ.get("MAESTRO_SEM_JANELA") != "1":
+        proximo = next((e for e in execs[1:] if folgas.get(e, {}).get("cabe") is not False), "o proximo")
+        resp, marcados, forcar = janela_liberar(execs[0], primeiro, apps, proximo)
+        registrar({"evento": "janela_local", "exec": execs[0], "resposta": resp, "apps": marcados})
+        if resp == "fechar" and marcados:
+            print(f"{execs[0]}: usuario autorizou fechar {', '.join(marcados)} (janela)")
+            fechar_apps(marcados, forcar)
+            primeiro = folga_local(cat[execs[0]])
+            if primeiro["cabe"] is not False:
+                return execs
+            print(f"{execs[0]}: ainda falta {_gb(primeiro['falta'])} depois de fechar")
+            folgas[execs[0]] = primeiro
+            return _sem_locais_que_nao_cabem(execs, cat, folgas, "nao coube nem depois de fechar")
+        if resp != "sem_janela":
+            motivo = {"tempo": "sem resposta na janela", "nao": "usuario nao quis fechar nada"}.get(resp, resp)
+            return _sem_locais_que_nao_cabem(execs, cat, folgas, motivo)
+    print("PC SEM FOLGA PARA O MODELO LOCAL. Pergunte ao usuario antes de fechar qualquer coisa.")
+    print(relatorio_folga(execs[0], primeiro, apps))
+    outros = [e for e, f in folgas.items() if e != execs[0] and f["cabe"]]
+    if outros:
+        print(f"locais que cabem agora: {', '.join(outros)}")
+    print("Saidas: autorizado -> 'maestro.py liberar --apps ...' e repita o comando; "
+          "nao autorizado -> repita com --pular-local (usa o proximo da rota).")
+    sys.exit(5)
+
+
+def cmd_recursos(a):
+    cat = catalogo()
+    ids = [a.exec] if a.exec else [e for e, ex in cat.items() if ex["cli"] == "ollama"]
+    for e in ids:
+        if e not in cat or cat[e]["cli"] != "ollama":
+            sys.exit(f"{e} nao e um executor ollama do catalogo")
+    mem, apps = memoria_livre(), None
+    falhou = False
+    for e in ids:
+        f = folga_local(cat[e], mem)
+        if f["cabe"] is False and apps is None:
+            apps = apps_liberaveis()
+        falhou = falhou or f["cabe"] is False
+        print(relatorio_folga(e, f, apps))
+    sys.exit(5 if a.exec and falhou else 0)
+
+
+def cmd_liberar(a):
+    """Fecha os apps pedidos. So rode depois de o usuario autorizar a lista."""
+    fechar_apps([_nome_proc(x) for x in a.apps.split(",") if x.strip()], a.forcar)
+
+
 def config_executor():
     """Arquivo de settings do executor claude: desliga plugins que capturam a sessao (ai-memory e afins)."""
     caminho = os.path.join(CASA, "executor-settings.json")
@@ -437,6 +876,8 @@ def montar(ex, prompt, sessao, timeout, leitura=False):
                "--strict-mcp-config", "--disable-slash-commands", "--settings", config_executor()]
         if leitura:
             cmd += ["--disallowedTools", "Edit", "Write", "NotebookEdit"]
+        if ex.get("esforco"):
+            cmd += ["--effort", ex["esforco"]]
         if sessao:
             cmd += ["--resume", sessao]
     elif cli == "ollama":
@@ -722,12 +1163,19 @@ def correcao(j, execs, cat, pedido, auto):
     tenta de novo: a correcao vai para o proximo da rota, que recebe a tarefa original porque nao tem a
     sessao de quem comecou. Executor pago segue na mesma sessao, que ja tem o contexto."""
     anterior, falhou = j.get("exec_usado"), j.get("falhou")
-    if not (auto and falhou and anterior in execs and len(execs) > 1
-            and cat.get(anterior, {}).get("cota") in GRATIS):
+    troca = (auto and falhou and anterior in execs and len(execs) > 1
+             and cat.get(anterior, {}).get("cota") in GRATIS)
+    if not troca and anterior in execs:
+        execs = [anterior] + [e for e in execs if e != anterior]  # quem tem a sessao vai primeiro
+    # --exec com outro executor na frente: ele nao tem a sessao de quem comecou, precisa da tarefa original
+    outro = bool(anterior) and bool(execs) and execs[0] != anterior
+    if not (troca or outro):
         return execs, (f"# Correcao (rodada {j['rodada']})\n\nA tarefa anterior esta quase pronta. "
                        f"Corrija somente isto:\n\n{pedido}\n")
-    execs = [e for e in execs if e != anterior] + [anterior]
-    print(f"{anterior} falhou na rodada anterior ({falhou}); a correcao vai para o proximo da rota")
+    if troca:
+        execs = [e for e in execs if e != anterior] + [anterior]
+        print(f"{anterior} falhou na rodada anterior ({falhou}); a correcao vai para o proximo da rota")
+    falhou = falhou or "trabalho incompleto"
     try:
         with open(os.path.join(job_dir(j["job"]), "tarefa-r1.md"), encoding="utf-8") as f:
             original = f.read()
@@ -752,6 +1200,7 @@ def cmd_run(a):
             sys.exit("informe a correcao")
         execs = resolver(a.exec if a.exec != "auto" else j["exec"], j.get("tipo"), cat, a.sensivel or j.get("sensivel"))
         execs, texto = correcao(j, execs, cat, texto, a.exec == "auto")
+        execs = checar_locais(execs, cat, a.pular_local, not a.sem_janela)
         if a.verificar:
             j["verificar"] = a.verificar
         avisos = []
@@ -760,6 +1209,7 @@ def cmd_run(a):
         if not texto:
             sys.exit("informe a tarefa (--tarefa arquivo.md ou texto)")
         execs = resolver(a.exec, a.tipo, cat, a.sensivel, meu_nivel(a.eu, cat))
+        execs = checar_locais(execs, cat, a.pular_local, not a.sem_janela)
         avisos = avisos_tarefa(texto, a.verificar)
         for av in avisos:
             print("AVISO:", av)
@@ -775,13 +1225,102 @@ def cmd_run(a):
             print("AVISO:", aviso)
         j = {"job": job, "repo": os.path.normpath(repo), "wt": wt, "base": base, "rodada": 1, "sessao": None,
              "exec": ",".join(execs), "tipo": a.tipo, "verificar": a.verificar, "sensivel": a.sensivel}
+    eu = meu_nivel(a.eu, cat) or j.get("eu")
+    j["eu"] = eu
+    j["pode_nao_mudar"] = a.pode_nao_mudar or j.get("pode_nao_mudar", False)
+    # Loop de verificacao: se o --verificar falha, o proprio maestro devolve a falha ao executor e roda de novo,
+    # sem passar pelo orquestrador. Freios: --tentativas, RODADAS_MAX por job, mesma falha duas vezes seguidas
+    # (sem progresso) e --orcamento de tokens do executor. O orquestrador so le o resumo final.
+    rodadas, gasto, parou = [], 0, None
+    while True:
+        r = rodada(j, execs, texto, cat, a, eu)
+        rodadas.append(r)
+        gasto += r["tin"] + r["tout"]
+        v = r["verif"]
+        if not v or v["ok"] or r["status"] in ("TIMEOUT", "DUVIDA"):
+            break
+        v["assinatura"] = assinatura(v["saida"])
+        if len(rodadas) > a.tentativas:
+            parou = f"limite de {a.tentativas} correcao(oes) automatica(s)" if a.tentativas else None
+        elif j["rodada"] >= RODADAS_MAX:
+            parou = f"o job chegou a {RODADAS_MAX} rodadas"
+        elif (len(rodadas) > 1 and rodadas[-2]["exec"] == r["exec"]
+              and rodadas[-2]["verif"].get("assinatura") == v["assinatura"]):
+            # so vale para o mesmo executor: outro executor com a mesma falha ainda e uma tentativa nova
+            parou = "mesma falha da rodada anterior (sem progresso)"
+        elif a.orcamento and gasto >= a.orcamento:
+            parou = f"orcamento de {a.orcamento} tokens do executor atingido ({gasto})"
+        if parou or len(rodadas) > a.tentativas:
+            break
+        registrar_rodada(j, r, auto=len(rodadas) > 1)
+        print(f"rodada {j['rodada']}: " + ("executor nao alterou nenhum arquivo" if v.get("sem_mudanca") else
+              f"verificacao FALHOU (exit {v['rc']})") + " -> correcao automatica")
+        curto, _ = enxugar(v["saida"])
+        pedido = (f"A verificacao `{j['verificar']}` falhou (exit {v['rc']}). Saida:\n\n```\n{curto}\n```\n\n"
+                  "Corrija o codigo para que ela passe. Nao apague, pule nem enfraqueca testes ou a verificacao para "
+                  "faze-la passar; se o teste contradiz a tarefa, responda ESCALAR: explicando.")
+        j["rodada"] += 1
+        execs, texto = correcao(j, execs, cat, pedido, a.exec == "auto" or bool(a.continuar))
+        execs = checar_locais(execs, cat, a.pular_local)  # a correcao pode ter posto um local na frente
+
+    r = rodadas[-1]
+    usado, verif = r["exec"], r["verif"]
+    ex = cat[usado]
+    stat = mudancas(j, stat=True).strip()
+    tin, tout = sum(x["tin"] for x in rodadas), sum(x["tout"] for x in rodadas)
+    out = [f"job {j['job']} | {usado} ({ex['cota']}, {ex['custo']}) | rodada {j['rodada']} | {r['status']} | "
+           f"{sum(x['seg'] for x in rodadas)}s",
+           f"sessao: {j['sessao']} | tokens do executor: {tin}/{tout}"]
+    if len(rodadas) > 1:
+        out.append("correcao automatica: " + " -> ".join(
+            f"r{x['rodada']} {x['exec']} {'OK' if x['verif'] and x['verif']['ok'] else x['status'] if not x['verif'] else 'FALHOU'}"
+            for x in rodadas))
+    if parou:
+        out.append(f"correcao automatica parou: {parou}. Decida: corrigir voce, --continuar com outra instrucao ou descartar")
+    if r["erro"]:
+        out.append("erro: " + str(r["erro"])[:400])
+    out.append("alteracoes:\n" + (stat[-1200:] if stat else "  nenhuma"))
+    if verif is not None:
+        out.append(f"verificacao: {'OK' if verif['ok'] else 'FALHOU'} (exit {verif['rc']})"
+                   + (" - nenhum teste rodou; confira se o arquivo de teste existe e e encontrado" if verif.get("vazia") else "")
+                   + (" - passou, mas o executor nao alterou nenhum arquivo" if verif.get("sem_mudanca") else ""))
+        if not verif["ok"]:
+            completo = os.path.join(job_dir(j["job"]), f"verif-r{j['rodada']}.txt")
+            with open(completo, "w", encoding="utf-8") as f:
+                f.write(verif["saida"])
+            curto, cortou = enxugar(verif["saida"])
+            out.append(curto)
+            if cortou:
+                out.append(f"(so as falhas; saida completa da verificacao: {completo})")
+    out.append("--- relatorio do executor (nao confie sem conferir) ---")
+    out.append(relatorio(r["texto_r"]))
+    if r["pendente"]:
+        out.append(f"--- o executor parou com uma duvida. Responda: maestro.py run --continuar {j['job']} \"sua decisao\"")
+    out.append(f"--- worktree: {j['wt']}")
+    out.append(f"proximo: maestro.py diff {j['job']} | juntar {j['job']} | run --continuar {j['job']} \"correcao\" | descartar {j['job']}")
+    resumo = "\n".join(out)
+    print(resumo)
+    # so a rodada final volta ao orquestrador: as automaticas entram no historico com custo zero para ele
+    registrar_rodada(j, r, auto=len(rodadas) > 1, devolvido_c=len(resumo), avisos=len(avisos), stat=stat)
+    sys.exit(r["codigo"])
+
+
+def assinatura(saida):
+    """Impressao da falha sem o que muda a cada execucao (tempos, enderecos, numeros de linha, pastas
+    temporarias). Duas rodadas seguidas com a mesma assinatura = o executor nao esta progredindo."""
+    linhas = [l for l in saida.splitlines() if SINAL_RE.search(l)] or saida.strip().splitlines()[-5:]
+    norm = re.sub(r"\d+(?:\.\d+)?\s*(?:ms|s|sec|seconds?)\b|0x[0-9a-fA-F]+|\bline \d+|:\d+\b|tmp[\w-]+", "#",
+                  "\n".join(linhas))
+    return marca(norm)
+
+
+def rodada(j, execs, texto, cat, a, eu):
+    """Uma rodada do job: executor, escaladas de duvida e verificacao. Nao imprime o resumo."""
     with open(os.path.join(j["wt"], TAREFA), "w", encoding="utf-8") as f:
         f.write(texto)
     with open(os.path.join(job_dir(j["job"]), f"tarefa-r{j['rodada']}.md"), "w", encoding="utf-8") as f:
         f.write(texto)
-
-    eu = meu_nivel(a.eu, cat) or j.get("eu")
-    j["eu"] = eu
+    tarefa_c = len(texto)
     inicio = time.time()
     res = executar(j, execs, cat, a)
     j["exec_usado"], j["sessao"] = res["exec"], res["sessao"] or j.get("sessao")
@@ -807,12 +1346,10 @@ def cmd_run(a):
         j["sessao"] = res["sessao"] or j.get("sessao")
         tin, tout = tin + res["tin"], tout + res["tout"]
 
-    usado, texto_r, erro, estourou = res["exec"], res["texto"], res["erro"], res["estourou"]
-    pendente = None if estourou else duvida(texto_r)
+    estourou, erro = res["estourou"], res["erro"]
+    pendente = None if estourou else duvida(res["texto"])
     status = "TIMEOUT" if estourou else ("DUVIDA" if pendente else ("ok" if res["rc"] == 0 and not erro else "ERRO"))
     codigo = {"TIMEOUT": 2, "DUVIDA": 4, "ok": 0, "ERRO": 1}[status]
-
-    stat = mudancas(j, stat=True).strip()
     verif = None
     if j.get("verificar") and status not in ("TIMEOUT", "DUVIDA"):
         try:
@@ -826,50 +1363,37 @@ def cmd_run(a):
         except subprocess.TimeoutExpired:
             verif = {"ok": False, "rc": 124, "saida": "verificacao estourou 600 s"}
         mudancas(j)  # limpa o que a verificacao possa ter deixado no indice
+        if verif["ok"] and not j.get("pode_nao_mudar") and not mudancas(j, stat=True).strip():
+            # o executor so conversou: os testes antigos passam, mas a tarefa nao foi feita
+            verif.update(ok=False, rc=0, sem_mudanca=True, saida="FALHOU: o executor nao alterou nenhum arquivo; "
+                         "a tarefa pede mudancas. Faca as alteracoes descritas em " + TAREFA)
         if not verif["ok"] and codigo == 0:
             codigo = 3
     j["falhou"] = status if status in ("ERRO", "TIMEOUT") else ("verificacao" if verif and not verif["ok"] else None)
     salvar_job(j)
-    seg = round(time.time() - inicio)
+    return {"exec": res["exec"], "rodada": j["rodada"], "texto_r": res["texto"], "erro": erro, "status": status,
+            "codigo": codigo, "verif": verif, "pendente": pendente, "tin": tin, "tout": tout, "consultas": consultas,
+            "seg": round(time.time() - inicio), "tarefa_c": tarefa_c}
 
-    ex = cat[usado]
-    out = [f"job {j['job']} | {usado} ({ex['cota']}, {ex['custo']}) | rodada {j['rodada']} | {status} | {seg}s",
-           f"sessao: {j['sessao']} | tokens do executor: {tin}/{tout}"]
-    if erro:
-        out.append("erro: " + str(erro)[:400])
-    out.append("alteracoes:\n" + (stat[-1200:] if stat else "  nenhuma"))
-    if verif is not None:
-        out.append(f"verificacao: {'OK' if verif['ok'] else 'FALHOU'} (exit {verif['rc']})"
-                   + (" - nenhum teste rodou; confira se o arquivo de teste existe e e encontrado" if verif.get("vazia") else ""))
-        if not verif["ok"]:
-            completo = os.path.join(job_dir(j["job"]), f"verif-r{j['rodada']}.txt")
-            with open(completo, "w", encoding="utf-8") as f:
-                f.write(verif["saida"])
-            curto, cortou = enxugar(verif["saida"])
-            out.append(curto)
-            if cortou:
-                out.append(f"(so as falhas; saida completa da verificacao: {completo})")
-    out.append("--- relatorio do executor (nao confie sem conferir) ---")
-    out.append(relatorio(texto_r))
-    if pendente:
-        out.append(f"--- o executor parou com uma duvida. Responda: maestro.py run --continuar {j['job']} \"sua decisao\"")
-    out.append(f"--- worktree: {j['wt']}")
-    out.append(f"proximo: maestro.py diff {j['job']} | juntar {j['job']} | run --continuar {j['job']} \"correcao\" | descartar {j['job']}")
-    resumo = "\n".join(out)
-    print(resumo)
-    registrar({"evento": "run", "job": j["job"], "exec": usado, "tipo": j.get("tipo"), "rodada": j["rodada"],
-               "status": status, "verificacao": None if verif is None else verif["ok"], "segundos": seg,
-               "tokens_in": tin, "tokens_out": tout, "repo": os.path.basename(j["repo"]), "consultas": consultas,
-               "tarefa_c": len(texto), "devolvido_c": len(resumo), "avisos": len(avisos),
+
+def registrar_rodada(j, r, auto=False, devolvido_c=0, avisos=0, stat=None):
+    """Um evento 'run' por rodada, para o 'sugerir' e o 'ganho' contarem cada tentativa. Rodada automatica
+    nao custou nada ao orquestrador: tarefa_c e devolvido_c ficam 0."""
+    stat = mudancas(j, stat=True) if stat is None else stat
+    registrar({"evento": "run", "job": j["job"], "exec": r["exec"], "tipo": j.get("tipo"), "rodada": r["rodada"],
+               "status": r["status"], "verificacao": None if r["verif"] is None else r["verif"]["ok"],
+               "segundos": r["seg"], "tokens_in": r["tin"], "tokens_out": r["tout"], "repo": os.path.basename(j["repo"]),
+               "consultas": r["consultas"], "auto": auto,
+               "tarefa_c": 0 if auto else r["tarefa_c"],
+               "devolvido_c": devolvido_c, "avisos": avisos,
                "diff_linhas": sum(int(n) for n in re.findall(r"(\d+) (?:insertion|deletion)", stat))})
-    sys.exit(codigo)
 
 
 def cmd_leitura(a, cat):
     texto = open(a.tarefa, encoding="utf-8").read() if a.tarefa else a.texto
     if not texto:
         sys.exit("informe o pedido")
-    lista = resolver(a.exec, a.tipo or "ler", cat, a.sensivel, meu_nivel(a.eu, cat))
+    lista = checar_locais(resolver(a.exec, a.tipo or "ler", cat, a.sensivel, meu_nivel(a.eu, cat)), cat, a.pular_local, not a.sem_janela)
     r = perguntar(lista, cat, LEITURA, texto, os.path.abspath(a.dir), a)
     if not r:
         sys.exit("nenhum executor disponivel na lista")
@@ -914,6 +1438,88 @@ def cmd_consultar(a):
     sys.exit(1 if erro else 0)
 
 
+def cmd_validar(a):
+    """Um modelo de topo (Opus ou Fable, esforco medio) revisa o trabalho feito por qualquer modelo e da o
+    veredito. Fonte do trabalho: um job do maestro (--job) ou as mudancas do projeto desde --base (padrao HEAD,
+    ou seja, o que ainda nao foi commitado, mais arquivos novos)."""
+    pedido = open(a.tarefa, encoding="utf-8").read() if a.tarefa else a.texto
+    if not pedido or len(pedido.strip()) < 20:
+        sys.exit("informe o que foi pedido (texto ou --tarefa arq.md), com as palavras do usuario: "
+                 "sem isso o revisor nao tem contra o que julgar")
+    if a.job:
+        j = carregar_job(a.job)
+        if not os.path.isdir(j["wt"]):
+            sys.exit("worktree do job nao existe mais (ja juntado? valide o projeto sem --job)")
+        pasta, diff, stat, novos = j["wt"], mudancas(j), mudancas(j, stat=True), []
+        try:
+            with open(os.path.join(job_dir(j["job"]), "tarefa-r1.md"), encoding="utf-8") as f:
+                pedido += "\n\n## Tarefa entregue ao executor\n\n" + f.read()
+        except OSError:
+            pass
+    else:
+        pasta = git(os.path.abspath(a.dir), "rev-parse", "--show-toplevel").stdout.strip()
+        if not pasta:
+            sys.exit("a pasta nao e um repositorio git: o revisor precisa de um diff para julgar")
+        pasta = os.path.normpath(pasta)
+        if git(pasta, "rev-parse", "--verify", a.base).returncode != 0:
+            sys.exit(f"--base {a.base} nao existe neste repositorio")
+        diff = git(pasta, "diff", a.base, "--", ".", *LIXO).stdout
+        stat = git(pasta, "diff", "--stat", a.base, "--", ".", *LIXO).stdout
+        novos = [l for l in git(pasta, "ls-files", "--others", "--exclude-standard").stdout.splitlines() if l.strip()]
+    if not diff.strip() and not novos and a.job:
+        sys.exit(f"o job {a.job} nao tem nenhuma alteracao no worktree: nao ha o que validar")
+    if not diff.strip() and not novos:
+        sys.exit(f"nada mudou desde {a.base}. Se o trabalho ja foi commitado, passe a base de antes dele "
+                 "(ex.: --base HEAD~1 ou --base main)")
+    vid = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
+    pasta_v = os.path.join(CASA, "validacoes", vid)
+    os.makedirs(pasta_v, exist_ok=True)
+    arq_diff = os.path.join(pasta_v, "diff.patch")
+    with open(arq_diff, "w", encoding="utf-8", newline="\n") as f:
+        f.write(diff)
+    partes = [f"# O que foi pedido\n\n{pedido.strip()}\n",
+              f"# O que mudou\n\nResumo:\n{stat.strip() or '(so arquivos novos)'}\n\n"
+              f"Diff completo ({len(diff.splitlines())} linhas): {arq_diff}\nLeia o diff inteiro antes de julgar."]
+    if novos:
+        partes.append("Arquivos novos ainda nao rastreados pelo git (leia na pasta do projeto):\n"
+                      + "\n".join(f"- {n}" for n in novos[:200]))
+    if a.verificar:
+        try:
+            v = subprocess.run(a.verificar, cwd=pasta, shell=True, capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", stdin=subprocess.DEVNULL, timeout=600)
+            curto, _ = enxugar(v.stdout + v.stderr)
+            partes.append(f"# Verificacao ja rodada pelo maestro\n\n`{a.verificar}` -> exit {v.returncode}\n```\n{curto}\n```")
+        except subprocess.TimeoutExpired:
+            partes.append(f"# Verificacao ja rodada pelo maestro\n\n`{a.verificar}` estourou 600 s")
+    texto = "\n\n".join(partes) + "\n"
+    with open(os.path.join(pasta_v, "pedido.md"), "w", encoding="utf-8") as f:
+        f.write(texto)
+    val = VALIDADORES[a.modelo]
+    eid = f"validar-{a.modelo}"
+    print(f"validando com {val['modelo']} (esforco {val['esforco']}) em {pasta} ...", flush=True)
+    r = perguntar([eid], {eid: val}, VALIDA, texto, pasta, a)
+    if not r:
+        sys.exit(f"{eid} indisponivel (cota esgotada?). Tente o outro: --modelo {'fable' if a.modelo == 'opus' else 'opus'}")
+    _, texto_r, tin, tout, erro, seg = r
+    m = VEREDITO_RE.search(texto_r or "")
+    veredito = m.group(1).upper() if m else None
+    with open(os.path.join(pasta_v, "resposta.md"), "w", encoding="utf-8") as f:
+        f.write(texto_r or "")
+    registrar({"evento": "validacao", "exec": eid, "status": "ERRO" if erro else "ok", "veredito": veredito,
+               "segundos": seg, "tokens_in": tin, "tokens_out": tout, "pedido_c": len(texto),
+               "resposta_c": len(texto_r or ""), "job": a.job, "repo": os.path.basename(pasta)})
+    print(f"validacao | {val['modelo']} | {'TIMEOUT' if erro == 'TIMEOUT' else 'ERRO' if erro else 'ok'} "
+          f"| {seg}s | tokens {tin}/{tout} | arquivos em {pasta_v}")
+    if erro:
+        print("erro:", str(erro)[:400])
+    print(devolver(texto_r or "(sem resposta)", a.max_texto, "validacao"))
+    if erro or not veredito:
+        if not erro:
+            print("AVISO: a resposta nao trouxe a linha VEREDITO; trate como nao validado")
+        sys.exit(2 if erro == "TIMEOUT" else 1)
+    sys.exit(3 if veredito == "REPROVADO" else 0)
+
+
 def cmd_rota(a):
     cat, esg = catalogo(), esgotados()
     n = meu_nivel(a.eu, cat)
@@ -953,6 +1559,15 @@ def cmd_juntar(a):
         r = git(j["repo"], "apply", "--whitespace=nowarn", caminho)
         if r.returncode != 0:  # projeto real mudou nesse meio tempo: tenta mesclar
             r = git(j["repo"], "apply", "--3way", "--whitespace=nowarn", caminho)
+        if r.returncode != 0:
+            # --3way recusa arquivo com mudanca fora do indice (o orquestrador mexeu no mesmo arquivo enquanto o
+            # job rodava). Com 1 linha de contexto, hunks em trechos diferentes do arquivo ainda entram
+            r2 = git(j["repo"], "apply", "-C1", "--whitespace=nowarn", caminho)
+            if r2.returncode == 0:
+                arqs = [l.split("\t")[-1] for l in git(j["repo"], "apply", "--numstat", caminho).stdout.splitlines() if l]
+                print("AVISO: aplicado com contexto reduzido (o arquivo mudou no projeto real); um trecho pode ter "
+                      "caido no lugar errado. Confira o diff destes arquivos: " + ", ".join(arqs))
+            r = r2 if r2.returncode == 0 else r
         if r.returncode != 0:
             sys.exit(f"git apply falhou; worktree mantido. Patch: {caminho}\n{r.stderr.strip()[:800]}")
         print("aplicado no projeto:\n" + git(j["repo"], "diff", "--stat").stdout[-1500:])
@@ -1043,9 +1658,53 @@ def economia(ev, cat, periodo):
     print()
 
 
+def indicadores(ev):
+    runs = [e for e in ev if e.get("evento") == "run"]
+    jobs_run = {e["job"] for e in runs if e.get("job")}
+    n_jobs = len(jobs_run)
+
+    p1 = [e for e in runs if e.get("rodada") == 1 and e.get("verificacao") is not None]
+    primeira_ok = round(100 * sum(1 for e in p1 if e.get("verificacao")) / len(p1)) if p1 else None
+
+    max_rodadas = {}
+    for e in runs:
+        jb = e.get("job")
+        if jb:
+            r = e.get("rodada", 1)
+            if jb not in max_rodadas or r > max_rodadas[jb]:
+                max_rodadas[jb] = r
+    rodadas_media = round(sum(max_rodadas.values()) / len(max_rodadas), 1) if max_rodadas else None
+
+    finais = {e["job"]: e["evento"] for e in ev if e.get("evento") in ("juntar", "descartar") and e.get("job")}
+    total_finais = len(finais)
+    n_juntados = sum(1 for st in finais.values() if st == "juntar")
+    juntado = round(100 * n_juntados / total_finais) if total_finais else None
+
+    soma_custo = 0
+    for e in ev:
+        if e.get("evento") in ("run", "leitura"):
+            entrada = e.get("tarefa_c") or e.get("pedido_c") or 0
+            saida = e.get("devolvido_c") or e.get("resposta_c") or 0
+            soma_custo += (entrada + saida) // 4
+    custo_por_juntado = soma_custo // n_juntados if n_juntados else None
+
+    return {
+        "jobs": n_jobs,
+        "primeira_ok": primeira_ok,
+        "rodadas_media": rodadas_media,
+        "juntado": juntado,
+        "custo_por_juntado": custo_por_juntado,
+    }
+
+
 def cmd_ganho(a):
-    desde = "" if a.dias <= 0 else time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - a.dias * 86400))
-    ev = []
+    if getattr(a, "comparar", False) and a.dias <= 0:
+        print("--comparar precisa de --dias maior que 0")
+    agora = time.time()
+    limite_atual = "" if a.dias <= 0 else time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(agora - a.dias * 86400))
+    limite_anterior = "" if (a.dias <= 0 or not getattr(a, "comparar", False)) else time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(agora - 2 * a.dias * 86400))
+    desde = limite_anterior if limite_anterior else limite_atual
+    ev_todos = []
     try:
         with open(HISTORICO, encoding="utf-8") as f:
             for linha in f:
@@ -1053,11 +1712,20 @@ def cmd_ganho(a):
                     e = json.loads(linha)
                 except ValueError:
                     continue
-                if e.get("data", "") >= desde:
-                    ev.append(e)
+                d = e.get("data", "")
+                if desde and d < desde:
+                    continue
+                ev_todos.append(e)
     except OSError:
         pass
-    cham = [e for e in ev if e.get("evento") in ("run", "leitura", "consulta")]
+    if a.dias > 0 and getattr(a, "comparar", False):
+        ev_anterior = [e for e in ev_todos if limite_anterior <= e.get("data", "") < limite_atual]
+        ev_atual = [e for e in ev_todos if e.get("data", "") >= limite_atual]
+    else:
+        ev_anterior = []
+        ev_atual = [e for e in ev_todos if e.get("data", "") >= limite_atual] if limite_atual else ev_todos
+    ev = ev_atual
+    cham = [e for e in ev if e.get("evento") in ("run", "leitura", "consulta", "validacao")]
     if not cham:
         print("sem historico no periodo")
         return
@@ -1118,6 +1786,32 @@ def cmd_ganho(a):
     print("onde se perdeu:" if achados else "onde se perdeu: nada detectado no periodo")
     for x in achados:
         print("  -", x)
+    if getattr(a, "comparar", False) and a.dias > 0:
+        print()
+        print(f"COMPARACAO (ultimos {a.dias:g} dias x {a.dias:g} dias anteriores)")
+        print("indicador              anterior      atual")
+        ind_ant = indicadores(ev_anterior)
+        ind_atu = indicadores(ev_atual)
+        linhas = [
+            ("jobs", "jobs", lambda v: str(v), None),
+            ("1a rodada ok", "primeira_ok", lambda v: f"{v}%", True),
+            ("rodadas por job", "rodadas_media", lambda v: f"{v:.1f}", False),
+            ("juntado", "juntado", lambda v: f"{v}%", True),
+            ("tokens do orquestrador/job", "custo_por_juntado", lambda v: str(v), False),
+        ]
+        for label, chave, fmt, mais_melhor in linhas:
+            v_ant = ind_ant.get(chave)
+            v_atu = ind_atu.get(chave)
+            s_ant = "-" if v_ant is None else fmt(v_ant)
+            s_atu = "-" if v_atu is None else fmt(v_atu)
+            seta = ""
+            if mais_melhor is not None and v_ant is not None and v_atu is not None and v_ant != v_atu:
+                if mais_melhor:
+                    seta = "melhor" if v_atu > v_ant else "pior"
+                else:
+                    seta = "melhor" if v_atu < v_ant else "pior"
+            tag = f"   {seta}" if seta else ""
+            print(f"{label:26}{s_ant:>5}{s_atu:>11}{tag}")
 
 
 def main():
@@ -1140,6 +1834,17 @@ def main():
     r.add_argument("--max-texto", type=int, default=6000)
     r.add_argument("--eu", help="seu id no catalogo ou seu nivel (1 a 4): delega so para nivel igual ou menor")
     r.add_argument("--escalar", type=int, default=1, help="quantas vezes o executor pode subir uma duvida sozinho")
+    r.add_argument("--tentativas", type=int, default=2, help="correcoes automaticas quando o --verificar falha (0 desliga)")
+    r.add_argument("--pode-nao-mudar", action="store_true",
+                   help="verificacao OK sem nenhuma alteracao conta como OK (tarefa de so confirmar/diagnosticar)")
+    r.add_argument("--orcamento", type=int, default=0, help="tokens do executor no job; atingido, a correcao automatica para (0 = sem limite)")
+    r.add_argument("--pular-local", action="store_true", help="modelo local sem memoria livre: pula para o proximo da rota sem perguntar")
+    r.add_argument("--sem-janela", action="store_true", help="modelo local sem memoria livre: em vez da janela, para com saida 5 (o orquestrador pergunta)")
+    rc = sub.add_parser("recursos", help="RAM/VRAM livres comportam os modelos ollama? lista apps que liberariam memoria")
+    rc.add_argument("--exec", help="um executor ollama do catalogo (padrao: todos)")
+    lb = sub.add_parser("liberar", help="fecha apps para abrir memoria; SO com autorizacao do usuario")
+    lb.add_argument("--apps", required=True, help="nomes da lista do 'recursos', separados por virgula")
+    lb.add_argument("--forcar", action="store_true", help="mata o que nao fechou sozinho (perde o que nao foi salvo)")
     k = sub.add_parser("consultar", help="pergunta ao modelo mais barato acima de voce; so leitura")
     k.add_argument("texto", nargs="?")
     k.add_argument("--eu")
@@ -1150,6 +1855,17 @@ def main():
     k.add_argument("--timeout", type=int, default=900)
     k.add_argument("--horas-cota", type=float, default=5)
     k.add_argument("--max-texto", type=int, default=4000)
+    v = sub.add_parser("validar", help="Opus ou Fable (esforco medio) revisa o trabalho e da o veredito; so leitura")
+    v.add_argument("texto", nargs="?", help="o que o usuario pediu, com as palavras dele")
+    v.add_argument("--tarefa", help="arquivo .md com o pedido (em vez do texto)")
+    v.add_argument("--modelo", choices=sorted(VALIDADORES), default="opus")
+    v.add_argument("--dir", default=".")
+    v.add_argument("--base", default="HEAD", help="revisa as mudancas desde esta ref (padrao: o que nao foi commitado)")
+    v.add_argument("--job", help="revisa o worktree de um job do maestro em vez do projeto")
+    v.add_argument("--verificar", help="comando rodado antes; o resultado vai junto para o revisor")
+    v.add_argument("--timeout", type=int, default=1500)
+    v.add_argument("--horas-cota", type=float, default=5)
+    v.add_argument("--max-texto", type=int, default=6000)
     o = sub.add_parser("rota", help="quem fica abaixo/igual e quem fica acima de voce; nao gasta nada")
     o.add_argument("--eu")
     o.add_argument("--tipo")
@@ -1170,12 +1886,14 @@ def main():
     s.add_argument("tipo", nargs="?")
     g = sub.add_parser("ganho", help="tokens processados pelos executores, o que voltou e onde se perdeu")
     g.add_argument("--dias", type=float, default=30, help="0 = todo o historico")
+    g.add_argument("--comparar", action="store_true", help="compara o periodo com o periodo anterior de mesmo tamanho")
     a = p.parse_args()
-    if a.cmd in ("run", "consultar") and profundidade() >= 1:
+    if a.cmd in ("run", "consultar", "validar", "liberar") and profundidade() >= 1:
         sys.exit("voce foi lancado pelo maestro (MAESTRO_EU definido): executor nao delega nem consulta. "
                  "Faca a tarefa; se faltar uma decisao, responda ESCALAR: <pergunta>")
-    {"catalogo": cmd_catalogo, "run": cmd_run, "consultar": cmd_consultar, "rota": cmd_rota, "diff": cmd_diff, "juntar": cmd_juntar, "descartar": cmd_descartar,
-     "jobs": cmd_jobs, "cota": cmd_cota, "sugerir": cmd_sugerir, "ganho": cmd_ganho}[a.cmd](a)
+    {"catalogo": cmd_catalogo, "run": cmd_run, "consultar": cmd_consultar, "validar": cmd_validar, "rota": cmd_rota, "diff": cmd_diff, "juntar": cmd_juntar, "descartar": cmd_descartar,
+     "jobs": cmd_jobs, "cota": cmd_cota, "sugerir": cmd_sugerir, "ganho": cmd_ganho,
+     "recursos": cmd_recursos, "liberar": cmd_liberar}[a.cmd](a)
 
 
 if __name__ == "__main__":
