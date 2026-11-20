@@ -23,15 +23,18 @@ Sao dois pecas:
 6. [Primeiros passos](#primeiros-passos)
 7. [Ciclo de vida de um job](#ciclo-de-vida-de-um-job)
 8. [Escalada: quando o executor trava](#escalada-quando-o-executor-trava)
-9. [Validar: revisao de senior com Opus ou Fable](#validar-revisao-de-senior-com-opus-ou-fable)
-10. [Referencia de comandos](#referencia-de-comandos)
-11. [O catalogo](#o-catalogo)
-12. [Como o maestro economiza token (sem ficar burro)](#como-o-maestro-economiza-token-sem-ficar-burro)
-13. [Seguranca](#seguranca)
-14. [Usando de qualquer CLI](#usando-de-qualquer-cli)
-15. [Dados e arquivos](#dados-e-arquivos)
-16. [Limitacoes conhecidas](#limitacoes-conhecidas)
-17. [Inspiracoes](#inspiracoes)
+9. [Modelos locais (Ollama) e prioridade de memoria](#modelos-locais-ollama-e-prioridade-de-memoria)
+10. [Validar: revisao de senior com Opus ou Fable](#validar-revisao-de-senior-com-opus-ou-fable)
+11. [Referencia de comandos](#referencia-de-comandos)
+12. [O catalogo](#o-catalogo)
+13. [Como o maestro economiza token (sem ficar burro)](#como-o-maestro-economiza-token-sem-ficar-burro)
+14. [Guarda: garante que o maestro e considerado](#guarda-garante-que-o-maestro-e-considerado)
+15. [Seguranca](#seguranca)
+16. [Testes](#testes)
+17. [Usando de qualquer CLI](#usando-de-qualquer-cli)
+18. [Dados e arquivos](#dados-e-arquivos)
+19. [Limitacoes conhecidas](#limitacoes-conhecidas)
+20. [Inspiracoes](#inspiracoes)
 
 ---
 
@@ -66,8 +69,8 @@ O maestro resolve as duas pontas:
          +-----------------------+             |
          |  EXECUTOR barato      |-------------+
          |  worktree isolado     |
-         |  OmniRoute > agy >    |   travou numa decisao?
-         |  Claude Haiku         |-----> "ESCALAR: pergunta"
+         |  Ollama > OmniRoute > |   travou numa decisao?
+         |  agy > Claude Haiku   |-----> "ESCALAR: pergunta"
          +-----------------------+              |
                                                 v
                                  +-------------------------------+
@@ -87,8 +90,8 @@ Todo modelo do catalogo tem um **nivel** de 1 a 4:
 |---|---|---|
 | **4** | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, Gemini 4 Carbon, Gemini 4 Neon xhigh, GPT de topo |
 | **3** | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Argon, Gemini 4 Neon medium/high, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
-| **2** | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, Gemini 4 Hydrogen medium/low, free-code, modelos 'mini' |
-| **1** | ler, coletar, extrair fatos, edicao mecanica | Flash low/lite, OmniRoute free-fast |
+| **2** | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, Gemini 4 Hydrogen medium/low, `ollama-qwen-code`, `ollama-gpt-oss`, free-code, modelos 'mini' |
+| **1** | ler, coletar, extrair fatos, edicao mecanica | Flash low/lite, `ollama-gemma4`, OmniRoute free-fast |
 
 O modelo que esta orquestrando informa quem e com `--eu` (o nivel, ou o seu id no catalogo). Para cada parte da tarefa ele pergunta: **qual e o menor nivel que resolve isto?**
 
@@ -100,7 +103,7 @@ O modelo que esta orquestrando informa quem e com `--eu` (o nivel, ou o seu id n
 
 Assim o esquema funciona com **qualquer** modelo no comando: um Opus desce quase tudo e nao tem para onde subir; um Haiku desce leitura para um modelo nivel 1 e sobe decisoes de arquitetura para um nivel 3 ou 4.
 
-**Ordem de gasto.** Dentro do mesmo nivel, o maestro respeita a ordem dos "bolsos" de cota: **1) OmniRoute (gratis) 2) Google/agy 3) Anthropic/Claude**. So passa ao proximo bolso quando o anterior esta sem cota.
+**Ordem de gasto.** Dentro do mesmo nivel, o maestro respeita a ordem dos "bolsos" de cota: **1) Ollama local (gratis) 2) OmniRoute (gratis) 3) Google/agy 4) Anthropic/Claude**. So passa ao proximo bolso quando o anterior esta sem cota (ou quando o modelo local nao cabe na memoria e o usuario opta por pular).
 
 ---
 
@@ -112,9 +115,10 @@ Assim o esquema funciona com **qualquer** modelo no comando: um Opus desce quase
 
 | CLI | Usado para | Observacao |
 |---|---|---|
+| `ollama` + `claude` | modelos locais (`ollama-gemma4`, `ollama-qwen-code`, `ollama-gpt-oss`) | o Ollama serve em `http://127.0.0.1:11434` (`OLLAMA_API_URL`) e o maestro chama via `claude --bare` com `ANTHROPIC_BASE_URL` |
 | `opencode` | modelos do **OmniRoute** (gratis e por credito) | precisa do provedor `omniroute` e dos agentes `worker` e `leitor` configurados (exemplo abaixo) |
 | `agy` | Gemini Flash/Hydrogen/Neon/Argon e Claude dentro do Antigravity (testado no agy 1.5.12) | usa a cota Google |
-| `claude` | Haiku, Sonnet, Opus | usa a sua assinatura do Claude Code |
+| `claude` | Haiku, Sonnet, Opus (e revisores `validar`) | usa a sua assinatura do Claude Code |
 
 ### Agentes do opencode
 
@@ -153,9 +157,10 @@ python instalar.py
 
 O instalador:
 
-- copia `maestro.py` e `catalogo.toml` para `~/.maestro/`;
+- copia `maestro.py`, `guarda.py` e `catalogo.toml` para `~/.maestro/`;
 - **preserva** um `catalogo.toml` ja instalado (use `python instalar.py --catalogo` para sobrescrever com o do repositorio);
-- copia a skill para cada CLI encontrado:
+- registra os hooks do `guarda.py` em `~/.claude/settings.json` de forma idempotente (use `python instalar.py --sem-guarda` para remover);
+- copia a skill `maestro` e gera as skills `/claudevalidateopus` e `/claudevalidatefable` (a partir de `validar-skill.md`) para cada CLI encontrado:
 
 | Pasta | Quem le |
 |---|---|
@@ -302,6 +307,27 @@ O que acontece depende de quem chamou:
 
 ---
 
+## Modelos locais (Ollama) e prioridade de memoria
+
+Os modelos locais sao o **1o bolso** na ordem de gasto (`local > omniroute > google > anthropic`), rodando 100% na maquina e sem custo de API:
+
+| Id | Modelo no Ollama | Nivel | Uso tipico | Memoria estimada |
+|---|---|---|---|---|
+| `ollama-gemma4` | `gemma4:12b-it-qat` | 1 | leitura, coleta, docs, tarefas pequenas | ~7 GB |
+| `ollama-gpt-oss` | `gpt-oss:20b` | 2 | codigo geral, docs, fallback local nivel 2 | ~14 GB |
+| `ollama-qwen-code` | `qwen3.6:35b-a3b-coding` | 2 | implementacao fechada, testes, refatoracao (MoE 35B-A3B) | ~22 GB |
+
+- **Execucao via `claude --bare`:** o maestro aponta `ANTHROPIC_BASE_URL` para `http://127.0.0.1:11434` (ou `OLLAMA_API_URL`), define `timeout` proprio de `900` s e teto de saida `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (`max_saida = 16000`). Se o modelo local travar ou entrar em loop, cede a vez ao proximo executor e registra `falha_local` no historico.
+- **Validacao automatica de RAM + VRAM:** antes de rodar um executor `ollama` no `run`, o maestro consulta a memoria livre (RAM + VRAM disponivel, considerando se o modelo ja esta carregado no Ollama) e compara com o tamanho necessario:
+  - **Cabe:** segue direto para o modelo local.
+  - **Nao cabe, mas cabe fechando apps:** o modelo local tem prioridade. Uma janela avisa quanto falta, quais apps abertos seriam fechados (processos agrupados pelo app que os abriu; sistema, terminal, sessoes de IA e o proprio `ollama` sao protegidos) e qual seria o proximo executor caso nao feche.
+    - **"Fechar" (ou sem resposta em 2 minutos):** fecha apenas os apps necessarios (forcando se nao fecharem sozinhos), salva a lista em `~/.maestro/reabrir.json`, executa o job local e, ao terminar, descarrega o modelo do Ollama (`keep_alive: 0`) e reabre os apps (navegadores voltam com `--restore-last-session` para restaurar as abas). Se mesmo depois de fechar ainda faltar memoria, reabre os apps na hora e passa ao proximo executor.
+    - **"Nao fechar":** pula os modelos locais que nao cabem e segue a rota normalmente.
+  - **Sem janela possivel (ou com `--sem-janela`):** o `run` para com codigo de saida **5** (`PC SEM FOLGA PARA O MODELO LOCAL`) e lista os apps liberaveis. O orquestrador pergunta ao usuario, roda `maestro liberar --apps a,b` (somente apos autorizacao) e repete o `run`, ou repete com `--pular-local`.
+  - **Recuperacao:** se o maestro for interrompido antes de reabrir os apps, rode `maestro reabrir`.
+
+---
+
 ## Validar: revisao de senior com Opus ou Fable
 
 Trabalhou com um modelo menor (agy com Argon ou Flash, Claude com Haiku, um modelo local...) e quer saber se esta mesmo certo? Digite **`/claudevalidateopus`** ou **`/claudevalidatefable`** na sessao, com um foco opcional depois do comando (`/claudevalidateopus confira a migracao do banco`).
@@ -380,6 +406,8 @@ Saida: **0** aprovado (com ou sem ressalvas), **3** reprovado, **1** erro ou res
 | `--timeout S` | `1800` | limite do executor, em segundos |
 | `--horas-cota H` | `5` | por quanto tempo marcar um executor como esgotado |
 | `--max-texto C` | `6000` | limite da resposta de `--leitura` que volta ao orquestrador |
+| `--pular-local` | | modelo local sem memoria livre: pula para o proximo da rota sem perguntar |
+| `--sem-janela` | | modelo local sem memoria livre: em vez da janela, para com saida 5 para o orquestrador perguntar |
 
 A rota `dificil` (`omni-credit-strong > agy-hydrogen-high > agy-neon-high > agy-argon-high > agy-opus > cc-sonnet`) e a unica que ignora o teto do `--eu`: e o caminho explicito para **executar** acima do seu nivel.
 
@@ -405,6 +433,7 @@ O consultor roda em modo so leitura e responde em ate 25 linhas: **DECISAO, MOTI
 | 2 | timeout |
 | 3 | executor terminou, mas a verificacao falhou |
 | 4 | executor parou com uma duvida (`ESCALAR`) que voltou para voce |
+| 5 | PC sem memoria livre para o modelo local (com `--sem-janela` ou sem janela disponivel) |
 
 ---
 
@@ -437,6 +466,9 @@ Executores que vem no catalogo:
 
 | Id | CLI | Nivel | Bolso | Flags |
 |---|---|---|---|---|
+| `ollama-gemma4` | ollama | 1 | local | |
+| `ollama-qwen-code` | ollama | 2 | local | |
+| `ollama-gpt-oss` | ollama | 2 | local | |
 | `omni-free-fast` | opencode | 1 | omniroute | externo |
 | `omni-free-code` | opencode | 2 | omniroute | externo |
 | `omni-free-safe` | opencode | 2 | omniroute | externo |
@@ -459,7 +491,7 @@ Executores que vem no catalogo:
 | `cc-sonnet` | claude | 3 | anthropic | poupar |
 | `cc-opus` | claude | 4 | anthropic | poupar |
 
-Para adicionar um executor, crie um bloco novo com `cli` em `claude`, `agy` ou `opencode`. Outros CLIs exigem um adaptador novo em `montar()` e `interpretar()` no `maestro.py`.
+Para adicionar um executor, crie um bloco novo com `cli` em `claude`, `ollama`, `agy` ou `opencode`. Outros CLIs exigem um adaptador novo em `montar()` e `interpretar()` no `maestro.py`.
 
 ---
 
@@ -567,7 +599,7 @@ O `agy` nao tem como desligar hooks por chamada (o ai-memory se registra em `~/.
 
 ## Testes
 
-- `python -m unittest discover -s testes -v`: regressao, sem modelo e sem rede (guarda, instalador em HOME temporario, executor sem plugins, verificacao vazia, modelo local travado, rota por taxa de acerto, troca do gratis que falhou, marcador do ai-memory).
+- `python -m unittest discover -s testes -v`: 65 testes de regressao, sem modelo e sem rede (guarda, instalador e skills `validar` em HOME temporario, executor sem plugins, verificacao vazia, modelo local travado, rota por taxa de acerto, troca do gratis que falhou, marcador do `ai-memory`, loop de correcao automatica, `ganho --comparar`, `validar`, `juntar -C1`, folga de memoria para modelo local, agrupamento de apps liberaveis e `reabrir`).
 - `python testes/smoke.py`: confere esta maquina (instalado == repo, hooks, memoria limpa, `rota`). Opcoes: `--modelo` (Haiku confirma que o executor nao ve o ai-memory), `--completo` (tarefa real ate a verificacao), `--inspiracoes` (headroom e rtk desde a ultima revisao), `--tudo`.
 
 Rode os dois depois de mudar o maestro e antes de subir.
@@ -601,8 +633,9 @@ repositorio
 ├── maestro.py        a ferramenta
 ├── catalogo.toml     executores, rotas e bolsos
 ├── SKILL.md          a skill (diretrizes do orquestrador)
+├── validar-skill.md  modelo das skills /claudevalidateopus e /claudevalidatefable
 ├── guarda.py         hooks que cobram a decisao de delegar
-├── instalar.py       instalador (codigo, skill e hooks do guarda)
+├── instalar.py       instalador (codigo, skills e hooks do guarda)
 └── testes/           test_regressao.py (unittest) e smoke.py (esta maquina)
 
 ~/.maestro/
@@ -610,8 +643,10 @@ repositorio
 ├── guarda.py, guarda/          guarda instalado e contadores por sessao
 ├── executor-settings.json      settings do executor claude (plugins desligados)
 ├── estado.json                 executores esgotados e ate quando
-├── historico.jsonl             um evento por linha: run, leitura, consulta, cota, juntar, descartar
+├── reabrir.json                apps fechados para modelo local e pendentes de reabertura
+├── historico.jsonl             um evento por linha: run, leitura, consulta, validacao, cota, juntar, descartar, janela_local, reabrir
 ├── jobs/<job>/                 job.json, tarefa-rN.md, log-rN-<exec>.txt, verif-rN.txt, final.patch
+├── validacoes/<id>/            pedido.md, diff.patch e resposta.md das revisoes com Opus/Fable
 ├── wt/<job>/                   worktrees abertos
 ├── wt/_leitura/                pasta de trabalho das leituras e consultas do agy
 ├── wt/.ai-memory.toml          marcador: sessoes de executor fora do perfil e sem handoff
