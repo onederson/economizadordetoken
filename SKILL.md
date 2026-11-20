@@ -125,12 +125,12 @@ maestro run --leitura --eu <voce> --dir <projeto> "pergunta de coleta"
 - Tarefas que podem passar de 1 minuto: rode em segundo plano e trabalhe em outra parte enquanto isso. Jobs paralelos sao seguros (cada um tem seu worktree), mas evite dois jobs no mesmo arquivo: a juntada do segundo pode conflitar.
 - Leia so o resumo impresso. O log completo fica em `~/.maestro/jobs/<job>/`, abra apenas para investigar falha.
 
-**Quando o modelo local nao cabe na memoria**, o maestro resolve sozinho, sem gastar token seu: abre uma janela no PC e o usuario marca os apps que pode fechar. Sim: ele fecha e usa o local. Nao, ou sem resposta em 2 min: segue a rota sem o local (linha `pulando ...` no resumo). Nao faca nada com isso.
+**Quando o modelo local nao cabe na memoria**, o maestro resolve sozinho, sem gastar token seu, e o modelo local tem prioridade (decisao do usuario): uma janela avisa quais apps vao ser fechados. "Fechar" ou sem resposta em 2 min: fecha so o necessario (forcando o que nao fechar), roda o local e, quando o maestro termina, tira o modelo da memoria e reabre os apps (navegador volta com as abas). "Nao fechar": segue a rota sem o local (linha `pulando ...` no resumo). Nao faca nada com isso. Se o maestro cair antes de reabrir, `maestro reabrir` reabre o que ficou pendente (o `recursos` avisa).
 
 So se a janela nao abrir (ou com `--sem-janela`) o run para com saida 5 (`PC SEM FOLGA PARA O MODELO LOCAL`), listando os apps. **Nunca feche nada sem o usuario autorizar** (isso vale mesmo com a delegacao automatica liberada):
 
 1. Pergunte ao usuario (AskUserQuestion), citando o modelo, quanto falta e os apps marcados com `*`, com as opcoes: fechar os sugeridos / escolher quais fechar / nao fechar e usar o proximo executor.
-2. Autorizou: `maestro liberar --apps <so os que ele aprovou>` e repita o mesmo `run`. App que nao fechou sozinho (pode estar pedindo para salvar) so vai com `--forcar` se o usuario aceitar perder o que nao foi salvo.
+2. Autorizou: `maestro liberar --apps <so os que ele aprovou>`, repita o mesmo `run` e, quando ele terminar, `maestro reabrir`. App que nao fechou sozinho (pode estar pedindo para salvar) so vai com `--forcar` se o usuario aceitar perder o que nao foi salvo.
 3. Nao autorizou, ou o relatorio diz que nem fechando tudo cabe: repita o `run` com `--pular-local` (segue a rota sem os locais que nao cabem).
 
 `maestro recursos [--exec ID]` mostra a mesma conta sem rodar nada. Executor lancado pelo maestro nao pode rodar `liberar`.

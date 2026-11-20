@@ -1013,7 +1013,8 @@ def _carregar_maestro():
 
 
 class TestFolgaLocal(unittest.TestCase):
-    """Modelo local que nao cabe: para com saida 5 (ninguem fecha nada sozinho) ou, com --pular-local, sai da lista."""
+    """Modelo local que nao cabe: tem prioridade. Janela 'fechar' ou sem resposta fecha, roda e reabre no fim;
+    'nao' segue a rota sem o local; sem janela para com saida 5; --pular-local nem pergunta."""
 
     def setUp(self):
         self.m = _carregar_maestro()
@@ -1023,19 +1024,48 @@ class TestFolgaLocal(unittest.TestCase):
                     "agy-x": {"cli": "agy", "modelo": "flash"}}
         tamanhos = {"grande:1": 20 * GB, "pequeno:1": 2 * GB}
         self.mem = (8 * GB, 32 * GB, 4 * GB, 16 * GB)  # RAM livre, total, VRAM livre, total
+        self.apps = {"chrome": (30 * GB, [11, 12], [("C:/x/chrome.exe", '"C:/x/chrome.exe"')]),
+                     "discord": (1 * GB, [13], [("C:/x/discord.exe", "")])}
 
         def api(url, rota):
             return [] if rota == "ps" else [{"name": n, "size": s} for n, s in tamanhos.items()]
         for alvo, valor in (("garantir_ollama", lambda url: True), ("_ollama_api", api),
-                            ("memoria_livre", lambda: self.mem), ("apps_liberaveis", lambda: {})):
+                            ("memoria_livre", lambda: self.mem), ("apps_liberaveis", lambda: self.apps),
+                            ("registrar", unittest.mock.MagicMock()), ("fechar_apps", unittest.mock.MagicMock()),
+                            ("guardar_para_reabrir", unittest.mock.MagicMock()),
+                            ("reabrir_apps", unittest.mock.MagicMock())):
             p = unittest.mock.patch.object(self.m, alvo, valor)
             p.start()
             self.addCleanup(p.stop)
+        p = unittest.mock.patch("atexit.register")  # nunca reabrir apps de verdade no fim dos testes
+        self.atexit = p.start()
+        self.addCleanup(p.stop)
 
-    def test_nao_cabe_para_com_saida_5(self):
+    def _janela(self, resposta):
+        p = unittest.mock.patch.object(self.m, "janela_liberar", unittest.mock.MagicMock(return_value=resposta))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _cabe_depois_de_fechar(self):
+        GB = self.m.GB
+
+        def fechou(*a, **k):
+            self.mem = (30 * GB, 32 * GB, 4 * GB, 16 * GB)
+            return [{"nome": "chrome", "alvos": []}]
+        self.m.fechar_apps.side_effect = fechou
+
+    def test_sem_janela_para_com_saida_5(self):
         with self.assertRaises(SystemExit) as c, unittest.mock.patch("builtins.print"):
             self.m.checar_locais(["ollama-grande", "agy-x"], self.cat, pular=False, janela=False)
         self.assertEqual(c.exception.code, 5)
+        self.m.fechar_apps.assert_not_called()
+
+    def test_janela_que_nao_abre_cai_na_saida_5(self):
+        self._janela("sem_janela")
+        with self.assertRaises(SystemExit) as c, unittest.mock.patch("builtins.print"):
+            self.m.checar_locais(["ollama-grande", "agy-x"], self.cat, False)
+        self.assertEqual(c.exception.code, 5)
+        self.m.fechar_apps.assert_not_called()
 
     def test_pular_local_tira_so_quem_nao_cabe(self):
         with unittest.mock.patch("builtins.print"):
@@ -1050,40 +1080,44 @@ class TestFolgaLocal(unittest.TestCase):
         with unittest.mock.patch.object(self.m, "_ollama_api", lambda url, rota: [{"name": "grande:1", "size": 1}]):
             self.assertTrue(self.m.folga_local(self.cat["ollama-grande"])["cabe"])
 
-    def _janela(self, resposta, marcados=()):
-        p = unittest.mock.patch.object(self.m, "janela_liberar", lambda *a, **k: (resposta, list(marcados), False))
-        p.start()
-        self.addCleanup(p.stop)
-        for alvo in ("registrar", "fechar_apps"):
-            q = unittest.mock.patch.object(self.m, alvo, unittest.mock.MagicMock())
-            q.start()
-            self.addCleanup(q.stop)
+    def test_nao_fechar_segue_a_rota_sem_fechar(self):
+        self._janela("nao")
+        with unittest.mock.patch("builtins.print"):
+            fica = self.m.checar_locais(["ollama-grande", "ollama-pequeno", "agy-x"], self.cat, False)
+        self.assertEqual(fica, ["ollama-pequeno", "agy-x"])
+        self.m.fechar_apps.assert_not_called()
 
-    def test_janela_nao_ou_sem_resposta_segue_sem_fechar(self):
-        for resp in ("nao", "tempo"):
+    def test_fechar_ou_sem_resposta_fecha_o_necessario_roda_e_agenda_reabrir(self):
+        for resp in ("fechar", "tempo"):
+            self.m.fechar_apps.reset_mock()
+            self.atexit.reset_mock()
+            self.mem = (8 * self.m.GB, 32 * self.m.GB, 4 * self.m.GB, 16 * self.m.GB)
             self._janela(resp)
+            self._cabe_depois_de_fechar()
             with unittest.mock.patch("builtins.print"):
-                fica = self.m.checar_locais(["ollama-grande", "ollama-pequeno", "agy-x"], self.cat, False)
-            self.assertEqual(fica, ["ollama-pequeno", "agy-x"])
-            self.m.fechar_apps.assert_not_called()
+                fica = self.m.checar_locais(["ollama-grande", "agy-x"], self.cat, False)
+            self.assertEqual(fica, ["ollama-grande", "agy-x"], resp)
+            self.m.fechar_apps.assert_called_once_with(["chrome"], forcar=True)  # so o necessario
+            self.m.guardar_para_reabrir.assert_called()
+            self.assertIs(self.atexit.call_args[0][0], self.m._ao_terminar)
 
-    def test_janela_autorizou_fecha_so_os_marcados_e_usa_local(self):
-        self._janela("fechar", ["chrome"])
-        GB = self.m.GB
-
-        def fechou(*a):
-            self.mem = (30 * GB, 32 * GB, 4 * GB, 16 * GB)  # depois de fechar, cabe
-        self.m.fechar_apps.side_effect = fechou
+    def test_nao_coube_nem_depois_de_fechar_reabre_na_hora(self):
+        self._janela("tempo")
+        self.m.fechar_apps.return_value = [{"nome": "chrome", "alvos": []}]
         with unittest.mock.patch("builtins.print"):
             fica = self.m.checar_locais(["ollama-grande", "agy-x"], self.cat, False)
-        self.m.fechar_apps.assert_called_once_with(["chrome"], False)
-        self.assertEqual(fica, ["ollama-grande", "agy-x"])
+        self.assertEqual(fica, ["agy-x"])
+        self.m.reabrir_apps.assert_called_once()
+        self.atexit.assert_not_called()
 
-    def test_sem_janela_cai_na_saida_5(self):
-        self._janela("sem_janela")
-        with self.assertRaises(SystemExit) as c, unittest.mock.patch("builtins.print"):
-            self.m.checar_locais(["ollama-grande", "agy-x"], self.cat, False)
-        self.assertEqual(c.exception.code, 5)
+    def test_nem_fechando_tudo_cabe_nao_fecha_nem_pergunta(self):
+        self.apps = {"discord": (1 * self.m.GB, [13], [])}
+        self._janela("fechar")
+        with unittest.mock.patch("builtins.print"):
+            fica = self.m.checar_locais(["ollama-grande", "agy-x"], self.cat, False)
+        self.assertEqual(fica, ["agy-x"])
+        self.m.janela_liberar.assert_not_called()
+        self.m.fechar_apps.assert_not_called()
 
 
 class TestAppsLiberaveis(unittest.TestCase):
@@ -1098,3 +1132,34 @@ class TestAppsLiberaveis(unittest.TestCase):
         apps = m.apps_liberaveis(procs)
         self.assertEqual(list(apps), ["chrome"])  # Code e ancestral; svchost/claude protegidos; sessao 0 e servico
         self.assertEqual(sorted(apps["chrome"][1]), [999003, 999004])
+
+    def test_agrupa_pelo_app_que_abriu_e_guarda_como_reabrir(self):
+        m = _carregar_maestro()
+        MB = 1024 ** 2
+        procs = [(500, 4, "explorer.exe", 100 * MB, 1, "", ""),
+                 (600, 500, "steam.exe", 100 * MB, 1, "C:/s/steam.exe", '"C:/s/steam.exe" -silent'),
+                 (601, 600, "steamwebhelper.exe", 300 * MB, 1, "C:/s/swh.exe", "swh --type=renderer"),
+                 (700, 500, "SearchHost.exe", 100 * MB, 1, "", ""),
+                 (701, 700, "msedgewebview2.exe", 400 * MB, 1, "C:/e/wv.exe", "wv")]
+        apps = m.apps_liberaveis(procs)
+        self.assertEqual(list(apps), ["steam"])  # webview do menu Iniciar (protegido) fica de fora
+        self.assertEqual(sorted(apps["steam"][1]), [600, 601])
+        self.assertEqual(apps["steam"][2], [("C:/s/steam.exe", '"C:/s/steam.exe" -silent')])
+
+
+class TestReabrir(unittest.TestCase):
+    def test_reabre_so_os_do_dono_e_navegador_volta_com_as_abas(self):
+        m = _carregar_maestro()
+        pasta = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, pasta, True)
+        exe = os.path.join(pasta, "chrome.exe")
+        open(exe, "w").close()
+        m.REABRIR = os.path.join(pasta, "reabrir.json")
+        m.guardar_para_reabrir([{"nome": "chrome", "alvos": [[exe, f'"{exe}"']]}], "eu")
+        m.guardar_para_reabrir([{"nome": "discord", "alvos": [[exe, ""]]}], "outro")
+        with unittest.mock.patch("subprocess.Popen") as popen, unittest.mock.patch.object(m, "registrar"), \
+                unittest.mock.patch("builtins.print"):
+            m.reabrir_apps("eu")
+        self.assertEqual(popen.call_count, 1)
+        self.assertIn("--restore-last-session", popen.call_args[0][0])
+        self.assertEqual([i["nome"] for i in m.ler_json(m.REABRIR, [])], ["discord"])

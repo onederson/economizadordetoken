@@ -30,12 +30,14 @@ passar, repetir a mesma falha, chegar a 3 rodadas no job ou estourar o --orcamen
 Saida do run: 0 ok, 1 erro, 2 timeout, 3 verificacao falhou, 4 executor parou com duvida,
 5 modelo local nao cabe e nao deu para abrir a janela (pergunte ao usuario; ver abaixo).
 
-Modelo local (ollama): antes de rodar, o maestro confere RAM + VRAM livres. Se nao cabe, abre uma janela para o
-usuario marcar o que fechar (sem resposta em 2 min = nao fecha nada e segue a rota). Sem janela (ou --sem-janela),
-para com saida 5 e lista os apps. NUNCA feche nada sem o usuario autorizar a lista:
+Modelo local (ollama): antes de rodar, o maestro confere RAM + VRAM livres. Se nao cabe, o modelo local tem
+prioridade: uma janela avisa quais apps vao ser fechados. 'Fechar' ou sem resposta em 2 min: fecha, roda e reabre
+os apps quando o maestro termina. 'Nao fechar': segue a rota sem o local. Sem janela (ou --sem-janela), para com
+saida 5 e lista os apps; ai quem orquestra NUNCA fecha nada sem o usuario autorizar:
   maestro.py recursos [--exec ID]              cabe ou nao, quanto falta, apps que liberariam memoria
   maestro.py liberar --apps chrome,discord     fecha so esses (graceful; --forcar mata o que nao fechou)
   maestro.py run ... --pular-local             usuario nao autorizou: segue para o proximo executor da rota
+  maestro.py reabrir                           reabre o que o maestro fechou e ainda nao reabriu
 """
 import argparse, collections, hashlib, json, os, re, secrets, shutil, subprocess, sys, time, tomllib, urllib.error, urllib.request
 
@@ -442,12 +444,12 @@ def garantir_ollama(url="http://127.0.0.1:11434"):
 
 # ---------- folga do PC para modelo local ----------
 # Antes de um executor ollama rodar, o maestro confere se a RAM + VRAM livres comportam o modelo. Se nao comportam,
-# abre uma janela e o proprio usuario marca o que pode fechar (zero token do orquestrador); sem resposta, nada e
-# fechado e a rota segue. Sem janela possivel, o run para com saida 5 e quem orquestra pergunta. Nada e fechado
-# sem o usuario autorizar.
+# o modelo local tem prioridade: uma janela avisa que vai fechar os apps necessarios (zero token do orquestrador).
+# 'Fechar' ou sem resposta: fecha, roda e reabre tudo no fim. 'Nao fechar': segue a rota sem o local. Sem janela
+# possivel, o run para com saida 5 e quem orquestra pergunta ao usuario.
 GB = 1024 ** 3
 FOLGA_SO = 2.5 * GB      # o que fica reservado ao sistema e aos apps que continuam abertos
-JANELA_ESPERA = 120      # segundos que a janela espera; sem resposta = nao fechar nada
+JANELA_ESPERA = 120      # segundos que a janela espera; sem resposta = fecha e roda o modelo local
 PROTEGIDOS = {  # nunca entram na lista de fechar: sistema, shell, sessoes de IA e o proprio ollama
     "system", "idle", "registry", "smss", "csrss", "wininit", "winlogon", "services", "lsass", "lsaiso", "svchost",
     "dwm", "explorer", "fontdrvhost", "sihost", "ctfmon", "taskhostw", "runtimebroker", "searchhost", "searchindexer",
@@ -511,10 +513,10 @@ def memoria_livre():
 
 
 def processos():
-    """[(pid, ppid, nome, memoria_bytes, sessao)] da maquina."""
+    """[(pid, ppid, nome, memoria_bytes, sessao, executavel, linha_de_comando)] da maquina."""
     if os.name == "nt":
-        ps = ("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,SessionId "
-              "| ConvertTo-Json -Compress")
+        ps = ("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,SessionId,"
+              "ExecutablePath,CommandLine | ConvertTo-Json -Compress")
         try:
             out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True,
                                  text=True, encoding="utf-8", errors="replace", timeout=60).stdout
@@ -524,16 +526,19 @@ def processos():
         if isinstance(dados, dict):
             dados = [dados]
         return [(d["ProcessId"], d["ParentProcessId"], d.get("Name") or "", int(d.get("WorkingSetSize") or 0),
-                 d.get("SessionId")) for d in dados]
+                 d.get("SessionId"), d.get("ExecutablePath") or "", d.get("CommandLine") or "") for d in dados]
     try:
-        out = subprocess.run(["ps", "-eo", "pid=,ppid=,rss=,comm="], capture_output=True, text=True, timeout=30).stdout
+        out = subprocess.run(["ps", "-eo", "pid=,ppid=,rss=,comm=,args="], capture_output=True, text=True,
+                             timeout=30).stdout
     except Exception:
         return []
     lista = []
     for l in out.splitlines():
-        partes = l.split(None, 3)
-        if len(partes) == 4:
-            lista.append((int(partes[0]), int(partes[1]), os.path.basename(partes[3]), int(partes[2]) * 1024, 1))
+        partes = l.split(None, 4)
+        if len(partes) >= 4:
+            args = partes[4] if len(partes) == 5 else partes[3]
+            lista.append((int(partes[0]), int(partes[1]), os.path.basename(partes[3]), int(partes[2]) * 1024, 1,
+                          args.split()[0] if args else "", args))
     return lista
 
 
@@ -547,20 +552,48 @@ def _ancestrais(procs):
     return vistos
 
 
+# quem abre apps sem ser dono deles: um app cujo pai e um destes e um app de verdade (raiz do grupo)
+LANCADORES = {"explorer", "svchost", "services", "wininit", "winlogon", "userinit", "sihost", "runtimebroker",
+              "dllhost", "taskhostw", "smss", "system", "systemd", "init", "launchd"}
+
+
 def apps_liberaveis(procs=None, minimo=150 * 1024 ** 2):
-    """{app: (memoria_total, [pids])} dos apps que podem ser fechados, do maior para o menor."""
+    """{app: (memoria_total, [pids], [(executavel, linha_de_comando)] das raizes)} dos apps que podem ser
+    fechados, do maior para o menor. Cada processo conta para o app que o abriu (steamwebhelper -> steam);
+    processo de um app protegido (webview do menu Iniciar, filhos do terminal) fica de fora."""
     procs = processos() if procs is None else procs
     anc = _ancestrais(procs)
+    info = {p[0]: p for p in procs}
     nomes_anc = {_nome_proc(p[2]) for p in procs if p[0] in anc}
     grupos = {}
-    for pid, _, nome, mem, sessao in procs:
-        n = _nome_proc(nome)
-        if not n or pid in anc or n in PROTEGIDOS or n in nomes_anc or sessao == 0 or pid == 0:
+    for p in procs:
+        pid, nome, mem, sessao = p[0], _nome_proc(p[2]), p[3], p[4]
+        if not nome or pid == 0 or pid in anc or nome in PROTEGIDOS or sessao == 0:
             continue
-        g = grupos.setdefault(n, [0, []])
+        raiz, vistos = pid, set()
+        while True:
+            vistos.add(raiz)
+            pai = info.get(info[raiz][1])
+            if not pai or pai[0] in vistos or pai[0] == 0 or _nome_proc(pai[2]) in LANCADORES:
+                break  # raiz: aberto pelo sistema/explorer, ou o pai ja morreu
+            if pai[0] in anc or _nome_proc(pai[2]) in PROTEGIDOS:
+                raiz = None  # pertence a algo protegido
+                break
+            raiz = pai[0]
+        if raiz is None:
+            continue
+        r = info[raiz]
+        n = _nome_proc(r[2])
+        if n in nomes_anc or n in PROTEGIDOS:
+            continue
+        g = grupos.setdefault(n, [0, [], []])
         g[0] += mem
         g[1].append(pid)
-    return dict(sorted(((n, (m, p)) for n, (m, p) in grupos.items() if m >= minimo), key=lambda x: -x[1][0]))
+        if pid == raiz:
+            alvo = (r[5] if len(r) > 5 else "", r[6] if len(r) > 6 else "")
+            if alvo not in g[2]:
+                g[2].append(alvo)
+    return dict(sorted(((n, tuple(g)) for n, g in grupos.items() if g[0] >= minimo), key=lambda x: -x[1][0]))
 
 
 def _ollama_api(url, rota):
@@ -612,11 +645,11 @@ def _gb(n):
 def sugerir_apps(apps, falta):
     """Menor lista (dos maiores para os menores) que cobre o que falta. Devolve (nomes, memoria somada)."""
     nomes, soma = [], 0
-    for nome, (m, _) in apps.items():
+    for nome, g in apps.items():
         if soma >= falta:
             break
         nomes.append(nome)
-        soma += m
+        soma += g[0]
     return nomes, soma
 
 
@@ -632,8 +665,8 @@ def relatorio_folga(eid, f, apps=None):
     if f["cabe"] is False and apps is not None:
         sugeridos, soma = sugerir_apps(apps, f["falta"])
         linhas.append(f"  falta {_gb(f['falta'])}. Apps que podem ser fechados (memoria em uso):")
-        for nome, (m, pids) in list(apps.items())[:15]:
-            linhas.append(f"    {'*' if nome in sugeridos else ' '} {nome:28} {_gb(m):>9}  ({len(pids)} processo(s))")
+        for nome, g in list(apps.items())[:15]:
+            linhas.append(f"    {'*' if nome in sugeridos else ' '} {nome:28} {_gb(g[0]):>9}  ({len(g[1])} processo(s))")
         if soma < f["falta"]:
             linhas.append("  mesmo fechando tudo da lista nao sobra o suficiente: use outro executor (--pular-local)")
         else:
@@ -642,37 +675,31 @@ def relatorio_folga(eid, f, apps=None):
     return "\n".join(linhas)
 
 
-def janela_liberar(eid, f, apps, proximo, espera=JANELA_ESPERA):
-    """Pergunta ao usuario numa janela, sem passar pelo orquestrador (zero token).
-    Devolve (resposta, apps_marcados, forcar); resposta: 'fechar' | 'nao' | 'tempo' | 'sem_janela'."""
+def janela_liberar(f, apps, sugeridos, proximo, espera=JANELA_ESPERA):
+    """Avisa numa janela que vai fechar os apps para o modelo local (zero token do orquestrador).
+    Devolve 'fechar' (botao), 'tempo' (sem resposta: fecha tambem), 'nao' ou 'sem_janela'."""
     try:
         import tkinter as tk
         raiz = tk.Tk()
     except Exception:
-        return "sem_janela", [], False
-    sugeridos, soma = sugerir_apps(apps, f["falta"])
+        return "sem_janela"
     res = {"r": "tempo"}
     raiz.title("maestro: memoria para o modelo local")
     raiz.attributes("-topmost", True)
     raiz.resizable(False, False)
     caixa = tk.Frame(raiz, padx=16, pady=12)
     caixa.pack()
-    tk.Label(caixa, justify="left", anchor="w", wraplength=440, text=(
+    tk.Label(caixa, justify="left", anchor="w", wraplength=460, text=(
         f"O modelo local {f['modelo']} precisa de ~{_gb(f['precisa'])}, mas so ha {_gb(f['livre'])} livres "
-        f"(faltam {_gb(f['falta'])}).\n\nMarque o que pode ser fechado. Os apps recebem o pedido normal de fechar "
-        "e podem perguntar se voce quer salvar.")).pack(anchor="w")
-    if soma < f["falta"]:
-        tk.Label(caixa, fg="#b00020", justify="left", wraplength=440,
-                 text="Mesmo fechando tudo da lista talvez nao sobre o suficiente.").pack(anchor="w", pady=(6, 0))
-    marcas = {}
+        f"(faltam {_gb(f['falta'])}). Para ele rodar, estes apps vao ser fechados e reabertos quando o "
+        "trabalho terminar:")).pack(anchor="w")
     lista = tk.Frame(caixa, pady=8)
     lista.pack(anchor="w")
-    for nome, (m, pids) in list(apps.items())[:12]:
-        v = tk.BooleanVar(value=nome in sugeridos)
-        tk.Checkbutton(lista, variable=v, text=f"{nome}  ({_gb(m)}, {len(pids)} processo(s))").pack(anchor="w")
-        marcas[nome] = v
-    forcar = tk.BooleanVar(value=False)
-    tk.Checkbutton(caixa, variable=forcar, text="Forcar o que nao fechar sozinho (perde o que nao foi salvo)").pack(anchor="w")
+    for nome in sugeridos:
+        g = apps[nome]
+        tk.Label(lista, text=f"•  {nome}  ({_gb(g[0])})").pack(anchor="w")
+    tk.Label(caixa, fg="#b00020", justify="left", wraplength=460,
+             text="O que nao fechar sozinho e encerrado a forca: salve o que estiver aberto.").pack(anchor="w")
     relogio = tk.Label(caixa, fg="#555")
     relogio.pack(anchor="w", pady=(8, 0))
     botoes = tk.Frame(caixa, pady=10)
@@ -682,7 +709,7 @@ def janela_liberar(eid, f, apps, proximo, espera=JANELA_ESPERA):
         res["r"] = r
         raiz.destroy()
 
-    tk.Button(botoes, text="Fechar marcados e usar o modelo local", command=lambda: responder("fechar")).pack(side="left")
+    tk.Button(botoes, text="Fechar e rodar o modelo local", command=lambda: responder("fechar")).pack(side="left")
     tk.Button(botoes, text=f"Nao fechar (usar {proximo})", command=lambda: responder("nao")).pack(side="right")
     raiz.protocol("WM_DELETE_WINDOW", lambda: responder("nao"))
     fim = time.time() + espera
@@ -691,7 +718,7 @@ def janela_liberar(eid, f, apps, proximo, espera=JANELA_ESPERA):
         resta = int(fim - time.time())
         if resta <= 0:
             return responder("tempo")
-        relogio.config(text=f"Sem resposta em {resta}s, segue sem fechar nada (usa {proximo}).")
+        relogio.config(text=f"Sem resposta em {resta}s: fecha os apps acima, roda o modelo e reabre tudo no fim.")
         raiz.after(1000, contar)
 
     contar()
@@ -700,15 +727,13 @@ def janela_liberar(eid, f, apps, proximo, espera=JANELA_ESPERA):
         raiz.focus_force()
         raiz.mainloop()
     except Exception:
-        return "sem_janela", [], False
-    if res["r"] != "fechar":
-        return res["r"], [], False
-    return "fechar", [n for n, v in marcas.items() if v.get()], bool(forcar.get())
+        return "sem_janela"
+    return res["r"]
 
 
 def fechar_apps(pedidos, forcar=False):
-    """Fecha os apps pedidos (so os liberaveis). Use SOMENTE com autorizacao do usuario. Devolve a memoria
-    livre antes e depois."""
+    """Fecha os apps pedidos (so os liberaveis). Use SOMENTE com autorizacao do usuario.
+    Devolve [{"nome", "alvos"}] do que foi fechado, para reabrir depois."""
     procs = processos()
     apps = apps_liberaveis(procs, minimo=0)
     antes = memoria_livre()
@@ -729,14 +754,14 @@ def fechar_apps(pedidos, forcar=False):
                     os.kill(p, signal.SIGTERM)
                 except OSError:
                     pass
-        fechados.append((nome, pids))
+        fechados.append((nome, pids, apps[nome][2]))
     for _ in range(16):  # ate ~8 s para os apps fecharem sozinhos
         vivos = {p[0] for p in processos()} if fechados else set()
-        if not any(p in vivos for _, pids in fechados for p in pids):
+        if not any(p in vivos for _, pids, _ in fechados for p in pids):
             break
         time.sleep(0.5)
     vivos = {p[0] for p in processos()} if fechados else set()
-    for nome, pids in fechados:
+    for nome, pids, _ in fechados:
         resta = [p for p in pids if p in vivos]
         if resta and forcar:
             if os.name == "nt":
@@ -758,9 +783,73 @@ def fechar_apps(pedidos, forcar=False):
     time.sleep(2 if fechados else 0)  # a memoria demora um pouco para voltar ao sistema
     depois = memoria_livre()
     print(f"RAM livre {_gb(antes[0])} -> {_gb(depois[0])}; VRAM livre {_gb(antes[2])} -> {_gb(depois[2])}")
-    registrar({"evento": "liberar", "apps": [n for n, _ in fechados], "ram_ganha": depois[0] - antes[0],
+    registrar({"evento": "liberar", "apps": [n for n, _, _ in fechados], "ram_ganha": depois[0] - antes[0],
                "vram_ganha": depois[2] - antes[2]})
-    return antes, depois
+    return [{"nome": n, "alvos": [list(a) for a in alvos]} for n, _, alvos in fechados]
+
+
+# ---------- reabrir o que foi fechado ----------
+REABRIR = os.path.join(CASA, "reabrir.json")  # apps fechados ainda nao reabertos (sobrevive a queda do maestro)
+NAVEGADORES = {"chrome", "brave", "msedge", "vivaldi", "opera", "firefox"}
+
+
+def guardar_para_reabrir(itens, dono):
+    pend = ler_json(REABRIR, [])
+    pend += [dict(i, dono=dono, quando=time.strftime("%Y-%m-%d %H:%M:%S")) for i in itens]
+    gravar_json(REABRIR, pend)
+
+
+def reabrir_apps(dono=None):
+    """Reabre o que foi fechado (so os itens deste dono; None = todos) e tira da lista de pendentes."""
+    pend = ler_json(REABRIR, [])
+    meus = [i for i in pend if dono is None or i.get("dono") == dono]
+    if not meus:
+        return
+    gravar_json(REABRIR, [i for i in pend if i not in meus])
+    for item in meus:
+        nome, ok = item["nome"], False
+        for exe, cmd in item.get("alvos") or []:
+            if not exe or not os.path.exists(exe):
+                continue
+            linha = cmd or f'"{exe}"'
+            if nome in NAVEGADORES and "--restore-last-session" not in linha and nome != "firefox":
+                linha += " --restore-last-session"  # volta com as abas que estavam abertas
+            try:
+                if os.name == "nt":
+                    base = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+                    for flags in (base | 0x01000000, base):  # 0x01000000: sai do job do terminal, se ele deixar
+                        try:
+                            subprocess.Popen(linha, cwd=os.path.dirname(exe), creationflags=flags, close_fds=True,
+                                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            break
+                        except OSError:
+                            if flags == base:
+                                raise
+                else:
+                    import shlex
+                    subprocess.Popen(shlex.split(linha), cwd=os.path.dirname(exe) or None, start_new_session=True,
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                ok = True
+            except Exception:
+                pass
+        print(f"{nome}: reaberto" if ok else f"{nome}: nao consegui reabrir (abra manualmente)")
+    registrar({"evento": "reabrir", "apps": [i["nome"] for i in meus]})
+
+
+def soltar_modelo(url, modelo):
+    """Tira o modelo da memoria na hora (senao o ollama o segura por 5 min e os apps reabertos ficam sem espaco)."""
+    try:
+        corpo = json.dumps({"model": modelo, "keep_alive": 0}).encode()
+        req = urllib.request.Request(f"{url.rstrip('/')}/api/generate", data=corpo,
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=30).read()
+    except Exception:
+        pass
+
+
+def _ao_terminar(url, modelo, dono):
+    soltar_modelo(url, modelo)
+    reabrir_apps(dono)
 
 
 def _sem_locais_que_nao_cabem(execs, cat, folgas, motivo):
@@ -774,11 +863,11 @@ def _sem_locais_que_nao_cabem(execs, cat, folgas, motivo):
 
 
 def checar_locais(execs, cat, pular, janela=True):
-    """Antes de rodar: se o primeiro executor da lista e ollama e o modelo nao cabe na memoria livre, pergunta
-    ao usuario numa janela se pode fechar apps (sem gastar token do orquestrador). Sim: fecha os marcados e usa o
-    local; nao ou sem resposta em JANELA_ESPERA s: segue a rota sem os locais que nao cabem. Sem janela possivel
-    (ou --sem-janela): para com saida 5 e o orquestrador pergunta. --pular-local: nem pergunta.
-    Devolve a lista de executores a usar."""
+    """Antes de rodar: se o primeiro executor da lista e ollama e o modelo nao cabe na memoria livre, o modelo
+    local tem prioridade: uma janela avisa que os apps necessarios vao ser fechados. Botao 'fechar' ou sem
+    resposta em JANELA_ESPERA s: fecha, roda e reabre tudo quando o maestro terminar. 'Nao fechar': segue a rota
+    sem os locais que nao cabem. Sem janela possivel (ou --sem-janela): para com saida 5 e o orquestrador
+    pergunta. --pular-local: nem pergunta. Devolve a lista de executores a usar."""
     if not execs or cat[execs[0]]["cli"] != "ollama":
         return execs
     mem = memoria_livre()
@@ -791,28 +880,37 @@ def checar_locais(execs, cat, pular, janela=True):
     if pular:
         return _sem_locais_que_nao_cabem(execs, cat, folgas, "--pular-local")
     apps = apps_liberaveis()
+    sugeridos, soma = sugerir_apps(apps, primeiro["falta"])
+    if soma < primeiro["falta"]:
+        return _sem_locais_que_nao_cabem(execs, cat, folgas, "nem fechando todos os apps caberia")
     if janela and os.environ.get("MAESTRO_SEM_JANELA") != "1":
         proximo = next((e for e in execs[1:] if folgas.get(e, {}).get("cabe") is not False), "o proximo")
-        resp, marcados, forcar = janela_liberar(execs[0], primeiro, apps, proximo)
-        registrar({"evento": "janela_local", "exec": execs[0], "resposta": resp, "apps": marcados})
-        if resp == "fechar" and marcados:
-            print(f"{execs[0]}: usuario autorizou fechar {', '.join(marcados)} (janela)")
-            fechar_apps(marcados, forcar)
-            primeiro = folga_local(cat[execs[0]])
+        resp = janela_liberar(primeiro, apps, sugeridos, proximo)
+        registrar({"evento": "janela_local", "exec": execs[0], "resposta": resp, "apps": sugeridos})
+        if resp in ("fechar", "tempo"):
+            quem = "usuario autorizou" if resp == "fechar" else "sem resposta na janela, modelo local tem prioridade:"
+            print(f"{execs[0]}: {quem} fechando {', '.join(sugeridos)} (reabre no fim)")
+            ex = cat[execs[0]]
+            url = ex.get("url") or os.environ.get("OLLAMA_API_URL", "http://127.0.0.1:11434")
+            dono = f"{os.getpid()}-{secrets.token_hex(3)}"
+            guardar_para_reabrir(fechar_apps(sugeridos, forcar=True), dono)
+            primeiro = folga_local(ex)
             if primeiro["cabe"] is not False:
+                import atexit
+                atexit.register(_ao_terminar, url, ex["modelo"], dono)
                 return execs
-            print(f"{execs[0]}: ainda falta {_gb(primeiro['falta'])} depois de fechar")
+            print(f"{execs[0]}: ainda falta {_gb(primeiro['falta'])} depois de fechar; reabrindo os apps")
+            reabrir_apps(dono)
             folgas[execs[0]] = primeiro
             return _sem_locais_que_nao_cabem(execs, cat, folgas, "nao coube nem depois de fechar")
-        if resp != "sem_janela":
-            motivo = {"tempo": "sem resposta na janela", "nao": "usuario nao quis fechar nada"}.get(resp, resp)
-            return _sem_locais_que_nao_cabem(execs, cat, folgas, motivo)
+        if resp == "nao":
+            return _sem_locais_que_nao_cabem(execs, cat, folgas, "usuario preferiu nao fechar nada")
     print("PC SEM FOLGA PARA O MODELO LOCAL. Pergunte ao usuario antes de fechar qualquer coisa.")
     print(relatorio_folga(execs[0], primeiro, apps))
     outros = [e for e, f in folgas.items() if e != execs[0] and f["cabe"]]
     if outros:
         print(f"locais que cabem agora: {', '.join(outros)}")
-    print("Saidas: autorizado -> 'maestro.py liberar --apps ...' e repita o comando; "
+    print("Saidas: autorizado -> 'maestro.py liberar --apps ...' e repita o comando (depois 'maestro.py reabrir'); "
           "nao autorizado -> repita com --pular-local (usa o proximo da rota).")
     sys.exit(5)
 
@@ -831,12 +929,24 @@ def cmd_recursos(a):
             apps = apps_liberaveis()
         falhou = falhou or f["cabe"] is False
         print(relatorio_folga(e, f, apps))
+    pend = ler_json(REABRIR, [])
+    if pend:
+        print(f"fechados pelo maestro e ainda nao reabertos: {', '.join(i['nome'] for i in pend)} (maestro.py reabrir)")
     sys.exit(5 if a.exec and falhou else 0)
 
 
 def cmd_liberar(a):
     """Fecha os apps pedidos. So rode depois de o usuario autorizar a lista."""
-    fechar_apps([_nome_proc(x) for x in a.apps.split(",") if x.strip()], a.forcar)
+    itens = fechar_apps([_nome_proc(x) for x in a.apps.split(",") if x.strip()], a.forcar)
+    if itens:
+        guardar_para_reabrir(itens, "manual")
+        print("para reabrir depois: maestro.py reabrir")
+
+
+def cmd_reabrir(a):
+    if not ler_json(REABRIR, []):
+        print("nada para reabrir")
+    reabrir_apps(None)
 
 
 def config_executor():
@@ -1845,6 +1955,7 @@ def main():
     lb = sub.add_parser("liberar", help="fecha apps para abrir memoria; SO com autorizacao do usuario")
     lb.add_argument("--apps", required=True, help="nomes da lista do 'recursos', separados por virgula")
     lb.add_argument("--forcar", action="store_true", help="mata o que nao fechou sozinho (perde o que nao foi salvo)")
+    sub.add_parser("reabrir", help="reabre os apps que o maestro fechou e ainda nao reabriu")
     k = sub.add_parser("consultar", help="pergunta ao modelo mais barato acima de voce; so leitura")
     k.add_argument("texto", nargs="?")
     k.add_argument("--eu")
@@ -1893,7 +2004,7 @@ def main():
                  "Faca a tarefa; se faltar uma decisao, responda ESCALAR: <pergunta>")
     {"catalogo": cmd_catalogo, "run": cmd_run, "consultar": cmd_consultar, "validar": cmd_validar, "rota": cmd_rota, "diff": cmd_diff, "juntar": cmd_juntar, "descartar": cmd_descartar,
      "jobs": cmd_jobs, "cota": cmd_cota, "sugerir": cmd_sugerir, "ganho": cmd_ganho,
-     "recursos": cmd_recursos, "liberar": cmd_liberar}[a.cmd](a)
+     "recursos": cmd_recursos, "liberar": cmd_liberar, "reabrir": cmd_reabrir}[a.cmd](a)
 
 
 if __name__ == "__main__":
