@@ -19,7 +19,7 @@ Ferramenta: `python ~/.maestro/maestro.py` (abaixo, `maestro`), rodada pelo seu 
 |---|---|---|
 | 4 | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, Gemini 4 Carbon, Gemini 4 Neon xhigh, GPT de topo |
 | 3 | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Argon, Gemini 4 Neon medium/high, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
-| 2 | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, Gemini 4 Hydrogen medium/low, ollama-qwen-code, ollama-gpt-oss, free-code, modelos "mini" |
+| 2 | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, Gemini 4 Hydrogen medium/low, ollama-gpt-oss (so pequena/docs), free-code, modelos "mini" |
 | 1 | ler, coletar, extrair fatos, edicao mecanica | Flash low/lite, ollama-gemma4, free-fast, modelos "nano" |
 
 Passe o seu nivel em `--eu` (o numero, ou o seu id do catalogo, ex.: `--eu cc-haiku`). Se o seu modelo nao esta na tabela, compare pelo nome (pro/sonnet = 3, flash/haiku/mini = 2) e, na duvida, use 2. Antes da primeira chamada da sessao rode `maestro rota --eu <voce>`: mostra, sem gastar nada, quem esta abaixo ou igual a voce, quem esta acima e o que esta esgotado.
@@ -77,9 +77,11 @@ A pergunta precisa se bastar, porque o modelo maior nao viu a sua conversa: o qu
 
 ## 3. Descer: escolher o executor
 
-**Ordem de gasto definida pelo usuario, nesta ordem exata: 1) Ollama local (gratis)  2) OmniRoute (gratis)  3) agy (Gemini Flash)  4) Claude Code (Haiku).** So passe para o proximo bolso quando o anterior estiver sem cota.
+**Prioridade do usuario: qualidade na entrega > agilidade > custo.** A ordem de gasto (1) Ollama local 2) OmniRoute 3) agy 4) Claude Code) vale entre executores que entregam igual. Quem perde para outro vai para depois dele. Por isso as rotas de codigo (`implementar`, `testes`, `refatorar`, `pesquisar`) comecam no agy-flash: o Ollama local perdeu ali (2 de 27 rodadas aproveitadas, 2026-11-24). O local continua em `pequena`, `docs` e `ler`.
 
-`--exec auto` (padrao) usa a rota do `--tipo` no catalogo, tira quem e maior que o `--eu`, e passa ao proximo sozinho quando a cota acaba.
+Use `--exec auto` (padrao) e nao monte listas com `--exec` a mao: o maestro aprende sozinho. Cada executor em cada job e uma tentativa; ganha quem entregou o que foi juntado. Quem fica mais de 15 pontos abaixo do melhor da rota, ou perde 3 seguidas, vai para o fim. Executor gratis que estoura o tempo (300 s no local), da erro ou termina sem alterar nada cede a vez na hora, e o worktree volta ao estado anterior. Servico fora do ar e pulado por 30 min sem contar derrota. Mudou o modelo ou a configuracao no catalogo: o historico antigo daquele executor deixa de contar. `maestro sugerir` mostra o placar e a ordem efetiva.
+
+`--verificar` roda **dentro do worktree** (`~/.maestro/wt/<job>`): script fora do repo precisa de caminho absoluto. Comando que comeca com `bash`/`sh` roda no Git Bash. Se a verificacao nao conseguir rodar (exit 126/127, comando nao encontrado), o maestro para e devolve a falha para voce corrigir o `--verificar`.
 
 | Parte | Como chamar |
 |---|---|
@@ -94,22 +96,28 @@ A pergunta precisa se bastar, porque o modelo maior nao viu a sua conversa: o qu
 
 ## 4. Especificar (o que faz o executor acertar de primeira)
 
-Grave a tarefa num arquivo (ex.: na pasta de rascunho) e passe com `--tarefa`. Modelo:
+Grave a tarefa num arquivo (ex.: na pasta de rascunho) e passe com `--tarefa`. O que o revisor do `validar` mais reprova nao e o caminho feliz, e o que a especificacao nao disse: estado que abre e nao fecha num caminho de erro, efeito duplicado com quem chama, teste so do caminho feliz e coisa feita sem pedido. Antes de escrever, rode `maestro licoes --dir <projeto>`: e o que as validacoes deste projeto ja reprovaram (o `run` anexa as ultimas sozinho). Modelo:
 
 ```markdown
 # Tarefa: <nome curto>
 ## Contexto
 - Arquivos e funcoes exatos ("em `get_meta` de `meta.py`"); o que ja existe e deve ser reaproveitado.
+- Quem chama o que vai mudar e o que ele espera (para nao duplicar efeito nem quebrar contrato).
 - Pegadinhas do ambiente.
-- PROIBIDO: mexer em <X, Y>; imprimir segredos; instalar pacotes; comandos > 300 s.
 ## O que fazer
 1. Comportamento exato, com exemplo de entrada e saida e numeros concretos.
-## Fora de escopo
-Tudo o resto.
+## Invariantes e caminhos de falha
+- O que tem de valer sempre (ex.: "todo DOWN enviado recebe UP", "arquivo temporario some mesmo com erro").
+- Cada caminho alem do feliz e o que acontece nele: erro, timeout, cancelamento, entrada invalida, recurso some no meio, troca de modo no meio.
+## PROIBIDO
+- Mexer em <X, Y>; imprimir segredos; instalar pacotes; comandos > 300 s.
+- Servico externo, rede, upload, dependencia ou arquivo novo que a tarefa nao cite; mudar comportamento fora do pedido.
 ## Verificacao
-Comando(s) e resultado esperado.
+- Comando(s) e resultado esperado.
+- Um teste por caminho de falha listado acima, nao so o caminho feliz.
 ```
 
+- Se nao consegue escrever a secao de invariantes e falhas, voce ainda nao entendeu a tarefa: investigue ou pergunte antes de delegar.
 - Uma tarefa = uma entrega. Grande vira A, B, C.
 - Prefira alvo executavel: peca primeiro os testes (tarefa A), depois a implementacao ate passarem (B).
 - Sempre passe `--verificar "<comando>"`: o maestro roda no worktree e devolve OK/FALHOU por exit code. Isso substitui o "aprovado" do executor.
@@ -171,6 +179,7 @@ Contexto longo: em vez de compactar no meio, feche a fase (tarefa juntada e veri
 | `maestro jobs` | jobs com worktree aberto |
 | `maestro cota <id> --horas 120` / `--liberar` | marcar/liberar cota manualmente |
 | `maestro sugerir [tipo]` | taxa de acerto por executor |
+| `maestro licoes [--dir projeto]` | o que as validacoes deste projeto ensinaram a especificar |
 | `maestro ganho [--dias 30] [--comparar]` | tokens processados pelos executores, o que voltou, onde se perdeu; `--comparar` poe o periodo lado a lado com o anterior |
 
 Adicionar executor: edite `~/.maestro/catalogo.toml` (cli `claude`, `ollama`, `agy` ou `opencode`; `nivel` de 1 a 4).

@@ -76,20 +76,49 @@ CONSULTA = (
 
 VALIDA = (
     "Voce e um engenheiro de software senior com mais de 50 anos de experiencia. Outro modelo fez um trabalho e "
-    "voce decide, com provas, se esta certo ou errado antes de ele ser entregue. Leia o arquivo {arq}: tem o que o "
-    "usuario pediu, o que foi alterado e onde esta o diff completo. A pasta do projeto e: {pasta}. Confira, nesta "
-    "ordem: 1) o pedido foi atendido por inteiro? Cada requisito, nas palavras do usuario; o que falta; o que foi "
-    "feito sem ser pedido. 2) o codigo esta correto? Logica, casos de borda, erros tratados, concorrencia, e se "
-    "combina com o resto do projeto (leia quem chama o que mudou). 3) testes: existem para o que mudou e testam de "
-    "verdade, nao so passam? Rode os testes e verificacoes do projeto e cite o resultado literal. 4) regressoes, "
-    "seguranca, segredos no diff, sobras (debug, temporarios, TODO). NAO altere nenhum arquivo: voce so julga. Nao "
-    "confie no que o outro modelo disse que fez: confira no codigo. Nao aprove por educacao nem reprove por gosto; "
-    "estilo so conta se causar bug ou confusao real. Responda em no maximo 40 linhas, neste formato:\n"
-    "VEREDITO: APROVADO | APROVADO COM RESSALVAS | REPROVADO (REPROVADO se houver qualquer problema [bloqueia])\n"
+    "voce decide, com provas, se ele pode ser entregue. Leia o arquivo {arq}: tem o que o usuario pediu, a "
+    "especificacao dada ao executor (se houver), a validacao anterior (se houver), o que foi alterado e onde esta o "
+    "diff completo. A pasta do projeto e: {pasta}. NAO altere nenhum arquivo: voce so julga. Nao confie no que o "
+    "outro modelo disse que fez: confira no codigo.\n\n"
+    "Ordem: 0) se ha VALIDACAO ANTERIOR, confira primeiro cada problema dela (corrigido ou nao, com caminho:linha). "
+    "1) o pedido foi atendido por inteiro? Cada requisito nas palavras do usuario; o que falta; o que foi feito sem "
+    "ser pedido (servico externo, rede, upload, arquivo grande, mudanca de comportamento global: isso e grave). "
+    "2) o codigo esta correto? Para cada estado que o trabalho abre (recurso, conexao, toque, lock, arquivo, "
+    "processo, flag), confira que fecha em TODOS os caminhos: sucesso, erro, cancelamento, timeout, entrada "
+    "invalida, troca de modo no meio. Leia quem chama o que mudou: efeito duplicado, contrato quebrado. "
+    "3) testes: rode os testes e verificacoes do projeto e cite o resultado literal; os testes cobrem os caminhos "
+    "de falha ou so o caminho feliz? 4) seguranca, segredos, sobras (debug, temporarios, TODO). Diff grande: "
+    "priorize rede/servicos externos, apagar dados, credenciais, concorrencia e maquinas de estado, e diga o que "
+    "nao leu.\n\n"
+    "Regua (siga a risca, ela decide o veredito):\n"
+    "- [bloqueia]: no uso pedido, da resultado errado, perde ou expoe dado, trava, ou faz algo nao pedido com "
+    "efeito externo ou irreversivel.\n"
+    "- [importante]: bug real num cenario plausivel do uso pedido, ou teste que deixaria passar esse bug.\n"
+    "- Para [bloqueia] e [importante] de o cenario concreto (entrada/sequencia -> resultado errado); se conseguir, "
+    "reproduza com um script e cite a saida. Sem cenario concreto, nao e problema: e no maximo sugestao.\n"
+    "- Aponte a CLASSE, nao so a ocorrencia: achou um caminho que deixa estado aberto, procure TODOS os outros "
+    "caminhos do mesmo tipo e liste todos no mesmo item, com a invariante que a correcao deve garantir e o teste "
+    "que pegaria a classe inteira. Correcao que conserta 1 de 4 caminhos gera outra rodada.\n"
+    "- Origem de cada problema: [spec] o pedido/especificacao nao disse e o executor nao tinha como saber; "
+    "[executor] estava dito, ou e engenharia basica; [antigo] ja existia antes deste trabalho.\n"
+    "- NAO sao problemas e nao pesam no veredito (vao em FORA DO VEREDITO, 1 linha cada): [antigo]; o que so se "
+    "confirma ao vivo (aparelho, conta, rede real) e ja foi declarado pendente; estilo, nomes, redundancia, espaco "
+    "no fim da linha, variavel sem uso; melhorias que ninguem pediu.\n"
+    "- Revalidacao: leia primeiro o diff desde a validacao anterior (a correcao). Problema novo so entra se for "
+    "[bloqueia] ou [importante] e voce disser se veio da correcao ou se ja existia e escapou antes. Item que o "
+    "usuario decidiu nao corrigir nao volta. Nao suba a regua a cada rodada.\n"
+    "- VEREDITO: REPROVADO se houver [bloqueia]; APROVADO COM RESSALVAS se houver [importante]; senao APROVADO. "
+    "APROVADO e o resultado esperado para trabalho correto: nao invente ressalva para parecer rigoroso.\n\n"
+    "Responda em no maximo 60 linhas, neste formato:\n"
+    "VEREDITO: APROVADO | APROVADO COM RESSALVAS | REPROVADO\n"
     "RESUMO: 1 a 2 linhas\n"
-    "PROBLEMAS: numerados, cada um com [bloqueia|importante|menor], caminho:linha, o que esta errado e como "
-    "corrigir; ou 'nenhum'\n"
-    "CONFERIDO: comandos que rodou com o resultado literal e o que leu\n"
+    "ANTERIOR: (so em revalidacao) cada item anterior -> corrigido / nao corrigido, caminho:linha\n"
+    "PROBLEMAS: numerados, cada um com [bloqueia|importante] [spec|executor], todas as ocorrencias em "
+    "caminho:linha, cenario concreto, invariante a garantir e teste que prova; ou 'nenhum'\n"
+    "FORA DO VEREDITO: ate 5 linhas; ou 'nada'\n"
+    "LICOES: para cada problema [spec], 1 linha generica e reutilizavel que, posta na especificacao de tarefas "
+    "futuras deste projeto, teria evitado o problema (comece cada uma com '- '; nada de caminho:linha); ou 'nenhuma'\n"
+    "CONFERIDO: comandos que rodou com o resultado literal, o que leu e o que NAO leu\n"
     "Nao imprima chaves ou tokens. Nao use a skill maestro nem chame maestro.py."
 )
 
@@ -208,17 +237,28 @@ def acima(n, cat, sensivel=False, minimo=None):
 
 
 ACERTO_MIN = 0.5      # abaixo disso o executor vai para o fim da rota daquele tipo
-ACERTO_AMOSTRA = 5    # jobs encerrados antes de julgar alguem
+# servico fora do ar nao e culpa do modelo: pula por FORA_DO_AR_H horas sem contar derrota no aprendizado
+FORA_DO_AR_RE = re.compile(r"ECONNREFUSED|ECONNRESET|connection refused|Unable to connect|getaddrinfo|ENOTFOUND|"
+                           r"actively refused|HTTP[ /]\d?\.?\d? ?50[234]|status(?: code)?:? ?50[234]|Bad Gateway|Service Unavailable", re.I)
+FORA_DO_AR_H = 0.5
+VERIF_QUEBRADA_RE = re.compile(r"is not recognized as an internal or external command|n.o . reconhecido como um comando|"
+                               r"^\S*: line \d+: \S+: command not found|^\S+: \S+: No such file or directory$|"
+                               r"can't open file .*No such file", re.I | re.M)
+ACERTO_AMOSTRA = 3    # tentativas julgadas antes de comparar alguem (falha custa minutos: aprende rapido)
+ACERTO_MARGEM = 0.15  # quem fica mais que isso abaixo do melhor da rota cede a vez a ele
+SEQUENCIA_RUIM = 3    # tantas tentativas perdidas seguidas (qualquer tipo) = vai para o fim na hora
 ACERTO_DIAS = 30      # so o recente conta, para um executor rebaixado poder voltar quando o historico envelhece
 GRATIS = ("local", "omniroute")
 RODADAS_MAX = 3  # rodadas por job somando as automaticas; dali em diante quem decide e o orquestrador
 
 
-def acerto(tipo, dias=ACERTO_DIAS):
-    """{executor: [juntados, encerrados]} dos jobs deste tipo encerrados nos ultimos `dias`."""
-    tipo = tipo or "implementar"
+def _tentativas(dias=ACERTO_DIAS):
+    """Aprendizado: cada (job, executor) e uma tentativa. Ganha so quem entregou o trabalho que foi juntado.
+    Perde quem falhou, estourou o tempo, nao mudou nada, foi substituido por outro na correcao ou teve o job
+    descartado. Antes so o executor final do job contava: o local que falhava e era salvo pelo agy nunca
+    perdia. Devolve lista cronologica de dicts {exec, tipo, job, data, ganhou, seg}."""
     desde = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - dias * 86400))
-    placar = collections.defaultdict(lambda: [0, 0])
+    ev = []
     try:
         with open(HISTORICO, encoding="utf-8") as f:
             for linha in f:
@@ -226,28 +266,122 @@ def acerto(tipo, dias=ACERTO_DIAS):
                     e = json.loads(linha)
                 except ValueError:
                     continue
-                if (e.get("evento") in ("juntar", "descartar") and (e.get("tipo") or "implementar") == tipo
-                        and e.get("data", "") >= desde):
-                    p = placar[e.get("exec")]
-                    p[0] += e["evento"] == "juntar"
-                    p[1] += 1
+                if e.get("data", "") >= desde:
+                    ev.append(e)
     except OSError:
         pass
+    tipo_job, finais = {}, {}
+    for e in ev:
+        if e.get("job") and e.get("evento") == "run":
+            tipo_job.setdefault(e["job"], e.get("tipo") or "implementar")
+        if e.get("evento") in ("juntar", "descartar") and e.get("job"):
+            finais[e["job"]] = e
+            tipo_job.setdefault(e["job"], e.get("tipo") or "implementar")
+    pares = {}  # (job, exec) -> tentativa
+    for e in ev:
+        jb, ex, evento = e.get("job"), e.get("exec"), e.get("evento")
+        if not jb or not ex or evento not in ("run", "falha_local"):
+            continue
+        t = pares.setdefault((jb, ex), {"exec": ex, "job": jb, "tipo": e.get("tipo") or tipo_job.get(jb, "implementar"),
+                                        "data": e.get("data", ""), "seg": 0, "falhou": False})
+        t["data"] = max(t["data"], e.get("data", ""))
+        t["seg"] += e.get("segundos") or 0
+        if evento == "falha_local" or e.get("status") in ("ERRO", "TIMEOUT"):
+            t["falhou"] = True
+    desde_exec = vigencia_config()
+    saida = []
+    for (jb, ex), t in pares.items():
+        if t["data"] < desde_exec.get(ex, ""):
+            continue  # tentativa de antes da configuracao atual do executor (outro modelo/contexto)
+        fim = finais.get(jb)
+        if fim:
+            t["ganhou"] = fim["evento"] == "juntar" and fim.get("exec") == ex
+        elif t["falhou"]:
+            t["ganhou"] = False  # job ainda aberto, mas este executor ja falhou nele
+        else:
+            continue  # job aberto e sem falha dele: ainda nao da para julgar
+        saida.append(t)
+    saida.sort(key=lambda t: t["data"])
+    return saida
+
+
+CONFIG_CHAVES = ("cli", "modelo", "contexto", "esforco", "url", "max_saida")
+
+
+def vigencia_config():
+    """{executor: data desde a qual o historico vale}. Quando o modelo ou a configuracao de um executor muda no
+    catalogo, o historico antigo dele deixa de contar: julga o executor novo, nao o que estava mal configurado.
+    Executor visto pela primeira vez mantem o historico."""
+    try:
+        cat = ler_catalogo()
+    except Exception:
+        return {}
+    est = ler_json(ESTADO, {})
+    vig = est.setdefault("config_exec", {})
+    agora = time.strftime("%Y-%m-%dT%H:%M:%S")
+    mudou = False
+    for eid, ex in cat.items():
+        if not isinstance(ex, dict) or "cli" not in ex:
+            continue
+        h = marca(json.dumps({k: ex.get(k) for k in CONFIG_CHAVES}, sort_keys=True))
+        v = vig.get(eid)
+        if v is None:
+            vig[eid], mudou = {"hash": h, "desde": ""}, True
+        elif v["hash"] != h:
+            vig[eid], mudou = {"hash": h, "desde": agora}, True
+            print(f"aprendizado: {eid} mudou de configuracao; o historico anterior dele deixa de contar")
+    if mudou:
+        gravar_json(ESTADO, est)
+    return {e: v["desde"] for e, v in vig.items()}
+
+
+def acerto(tipo, dias=ACERTO_DIAS, tentativas=None):
+    """{executor: [ganhou, tentativas, segundos_somados_das_vitorias]} no tipo, nos ultimos `dias`."""
+    tipo = tipo or "implementar"
+    placar = collections.defaultdict(lambda: [0, 0, 0])
+    for t in (_tentativas(dias) if tentativas is None else tentativas):
+        if t["tipo"] == tipo:
+            p = placar[t["exec"]]
+            p[0] += t["ganhou"]
+            p[1] += 1
+            p[2] += t["seg"] if t["ganhou"] else 0
     return placar
 
 
-def ordenar_por_acerto(lista, tipo):
-    """Quem teve menos da metade dos jobs juntados (com amostra suficiente) vai para o fim da rota, na mesma
-    ordem. Nao sai da lista: fica de reserva se os outros estiverem sem cota. Token gratis que vira descarte
-    custa token caro de quem revisa e reescreve a tarefa."""
-    placar = acerto(tipo)
-    fracos = [e for e in lista if placar.get(e, [0, 0])[1] >= ACERTO_AMOSTRA
-              and placar[e][0] / placar[e][1] < ACERTO_MIN]
+def em_sequencia_ruim(eid, tentativas, n=SEQUENCIA_RUIM):
+    """As ultimas n tentativas do executor (qualquer tipo) foram todas perdidas: ambiente ou modelo quebrado.
+    Pega o problema na hora, sem esperar a amostra do tipo encher."""
+    dele = [t for t in tentativas if t["exec"] == eid][-n:]
+    return len(dele) >= n and not any(t["ganhou"] for t in dele)
+
+
+def ordenar_por_acerto(lista, tipo, silencioso=False):
+    """Aprende com o historico e reordena a rota do catalogo (que segue a ordem de gasto do usuario).
+    Vai para o fim, de reserva para falta de cota, quem:
+      - tem amostra (ACERTO_AMOSTRA) e acerta menos que ACERTO_MIN, ou fica mais de ACERTO_MARGEM abaixo do
+        melhor executor da rota (ex.: o local que perde para o agy cede a vez ao agy);
+      - perdeu as ultimas SEQUENCIA_RUIM tentativas, em qualquer tipo.
+    Qualidade vem antes de custo: token gratis que vira descarte custa token caro de quem revisa e refaz.
+    O historico envelhece (ACERTO_DIAS), entao quem foi rebaixado volta a ser testado depois."""
+    tents = _tentativas()
+    placar = acerto(tipo, tentativas=tents)
+    taxa = {e: placar[e][0] / placar[e][1] for e in lista if placar.get(e, [0, 0])[1] >= ACERTO_AMOSTRA}
+    melhor = max(taxa.values()) if taxa else None
+    fracos, motivo = [], {}
+    for e in lista:
+        if e in taxa and (taxa[e] < ACERTO_MIN or taxa[e] < melhor - ACERTO_MARGEM):
+            fracos.append(e)
+            motivo[e] = (f"{placar[e][0]}/{placar[e][1]} tentativas aproveitadas em '{tipo or 'implementar'}'"
+                         f" nos ultimos {ACERTO_DIAS} dias; o melhor da rota tem {round(100 * melhor)}%")
+        elif em_sequencia_ruim(e, tents):
+            fracos.append(e)
+            motivo[e] = f"perdeu as ultimas {SEQUENCIA_RUIM} tentativas"
     if not fracos or len(fracos) == len(lista):
         return lista
-    for e in fracos:
-        print(f"rota: {e} vai para o fim ({placar[e][0]}/{placar[e][1]} jobs juntados em "
-              f"'{tipo or 'implementar'}' nos ultimos {ACERTO_DIAS} dias)")
+    if not silencioso:
+        for e in fracos:
+            print(f"rota: {e} vai para o fim ({motivo[e]})")
+    fracos.sort(key=lambda e: -taxa.get(e, 0))
     return [e for e in lista if e not in fracos] + fracos
 
 
@@ -394,6 +528,23 @@ def _desfazer_links(raiz):
                         pass
             elif e.is_dir(follow_symlinks=False):
                 pilha.append(e.path)
+
+
+def foto_wt(wt):
+    """Estado atual do worktree (rastreado + nao rastreado) como um tree do git, sem mudar nada."""
+    git(wt, "add", "-A")
+    t = git(wt, "write-tree").stdout.strip()
+    git(wt, "reset", "-q")
+    return t
+
+
+def restaurar_wt(wt, tree):
+    """Volta o worktree ao tree da foto: o lixo de um executor que falhou nao contamina o proximo."""
+    if not tree:
+        return
+    git(wt, "add", "-A")
+    git(wt, "read-tree", "-u", "--reset", tree)
+    git(wt, "reset", "-q")
 
 
 def remover_worktree(j):
@@ -998,6 +1149,12 @@ def montar(ex, prompt, sessao, timeout, leitura=False):
         # modelo local em loop gera texto ate o teto do Claude Code (32k); com teto menor ele falha antes e o maestro
         # passa para o proximo executor (catalogo: max_saida)
         env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(ex.get("max_saida", 16000))
+        # O Claude Code nao conhece modelos do ollama e supoe 1M de contexto: nunca compacta. O ollama corta o
+        # comeco da conversa sem avisar (onde estao as regras e a tarefa) e o modelo "esquece" o que fazer.
+        # Com o contexto real (catalogo: contexto = num_ctx do modelo) ele compacta antes do corte.
+        if ex.get("contexto"):
+            env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(ex["contexto"])
+            env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(ex["contexto"] * 0.8))
         cmd = [exe, "-p", prompt, "--model", modelo, "--output-format", "json", "--dangerously-skip-permissions",
                "--strict-mcp-config", "--disable-slash-commands", "--bare"]
         if leitura:
@@ -1125,6 +1282,9 @@ def avisos_tarefa(texto, verificar):
         av.append("a tarefa nao cita nenhum arquivo ou funcao: o executor vai gastar tokens procurando")
     if len(texto) < 200:
         av.append("tarefa com menos de 200 caracteres: se e pequena, faca voce mesmo; se nao e, falta especificacao")
+    elif len(texto) >= 800 and not re.search(r"invariante|caminhos? de (falha|erro)|se (der|falhar|cair|houver) erro", texto, re.I):
+        av.append("a tarefa nao diz o que acontece nos caminhos de falha (erro, timeout, cancelamento, entrada "
+                  "invalida) nem as invariantes: e o que o validar mais reprova. Veja o modelo da secao 4 da skill")
     return av
 
 
@@ -1170,18 +1330,31 @@ def perguntar(lista, cat, instrucao, texto, pasta, a):
                 garantir_marcador(os.path.dirname(onde))
                 cmd += ["--add-dir", pasta]
             inicio = time.time()
+            limite = min(a.timeout, int(ex.get("timeout", a.timeout)))
+            url = ex.get("url") or os.environ.get("OLLAMA_API_URL", "http://127.0.0.1:11434")
             try:
                 r = subprocess.run(cmd, cwd=onde, env=ambiente(env, onde, eid), stdin=subprocess.DEVNULL,
                                    capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                   timeout=a.timeout + 60)
+                                   timeout=limite + 60)
             except subprocess.TimeoutExpired:
+                if (ex.get("cota") in GRATIS or ex["cli"] == "ollama") and eid != lista[-1]:
+                    print(f"{eid}: passou de {limite}s; tentando o proximo")
+                    registrar({"evento": "falha_local", "exec": eid, "tipo": "ler", "motivo": f"passou de {limite}s"})
+                    continue
                 return eid, "", 0, 0, "TIMEOUT", round(time.time() - inicio)
+            finally:
+                if ex["cli"] == "ollama":
+                    soltar_modelo(url, ex["modelo"])
             _, texto_r, tin, tout, erro = interpretar(ex["cli"], r.stdout)
             if (r.returncode != 0 or erro) and COTA_RE.search(f"{erro or ''} {r.stderr[-3000:]} {r.stdout[-3000:]}"):
                 print(f"{eid}: cota esgotada (marcado ate {marcar_esgotado(eid, a.horas_cota)}); tentando o proximo")
                 continue
-            if ex["cli"] == "ollama" and (r.returncode != 0 or erro):
-                print(f"{eid}: falhou no ollama ({str(erro or 'erro local')[:120]}); tentando o proximo")
+            if (r.returncode != 0 or erro) and FORA_DO_AR_RE.search(f"{erro or ''} {r.stderr[-3000:]} {r.stdout[-3000:]}"):
+                print(f"{eid}: servico fora do ar (pulado ate {marcar_esgotado(eid, FORA_DO_AR_H)}); tentando o proximo")
+                continue
+            if (ex.get("cota") in GRATIS or ex["cli"] == "ollama") and (r.returncode != 0 or erro or not texto_r.strip()):
+                print(f"{eid}: falhou ({str(erro or 'resposta vazia')[:120]}); tentando o proximo")
+                registrar({"evento": "falha_local", "exec": eid, "tipo": "ler", "motivo": str(erro or "resposta vazia")[:120]})
                 continue
             return eid, texto_r, tin, tout, erro, round(time.time() - inicio)
         return None
@@ -1206,19 +1379,24 @@ def consultar(texto, n, cat, pasta, a, origem, sensivel=False, minimo=None):
 def executar(j, execs, cat, a, passo=0):
     """Roda no worktree o primeiro executor com cota e devolve o que ele respondeu."""
     esg = esgotados()
+    ultima_falha = None
     for eid in execs:
         if eid in esg:
             print(f"pulando {eid}: cota esgotada ate {esg[eid]}")
             continue
         ex = cat[eid]
-        if ex["cli"] == "ollama" and not garantir_ollama(ex.get("url") or os.environ.get("OLLAMA_API_URL", "http://127.0.0.1:11434")):
+        url = ex.get("url") or os.environ.get("OLLAMA_API_URL", "http://127.0.0.1:11434")
+        if ex["cli"] == "ollama" and not garantir_ollama(url):
             print(f"pulando {eid}: servidor ollama indisponivel; tentando o proximo")
             continue
         sessao = j["sessao"] if j.get("exec_usado") == eid else None
         limite = min(a.timeout, int(ex.get("timeout", a.timeout)))  # catalogo: timeout proprio do executor
         cmd, env = montar(ex, REGRAS, sessao, limite)
         log = os.path.join(job_dir(j["job"]), f"log-r{j['rodada']}{f'-e{passo}' if passo else ''}-{eid}.txt")
+        gratis = ex.get("cota") in GRATIS or ex["cli"] == "ollama"
+        foto = foto_wt(j["wt"]) if gratis else None
         estourou = False
+        inicio = time.time()
         try:
             r = subprocess.run(cmd, cwd=j["wt"], env=ambiente(env, j["wt"], eid), stdin=subprocess.DEVNULL,
                                capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -1227,21 +1405,50 @@ def executar(j, execs, cat, a, passo=0):
         except subprocess.TimeoutExpired as t:
             bruto = t.stdout.decode("utf-8", "replace") if isinstance(t.stdout, bytes) else (t.stdout or "")
             err, rc, estourou = "", 124, True
+        finally:
+            if ex["cli"] == "ollama":
+                soltar_modelo(url, ex["modelo"])  # nao segura 12 GB enquanto build/gradle rodam
         with open(log, "w", encoding="utf-8") as f:
             f.write(bruto + "\n--- stderr ---\n" + err)
         sessao_n, texto_r, tin, tout, erro = interpretar(ex["cli"], bruto)
+        res = {"exec": eid, "sessao": sessao_n, "texto": texto_r, "tin": tin, "tout": tout, "erro": erro,
+               "rc": rc, "estourou": estourou}
         if not estourou and (rc != 0 or erro) and COTA_RE.search(f"{erro or ''}\n{err[-3000:]}\n{bruto[-3000:]}"):
             ate = marcar_esgotado(eid, a.horas_cota)
             print(f"{eid}: cota esgotada (marcado ate {ate}); tentando o proximo")
             registrar({"evento": "cota", "exec": eid, "ate": ate})
+            restaurar_wt(j["wt"], foto)
             continue
-        if ex["cli"] == "ollama" and (estourou or rc != 0 or erro):
-            motivo = f"passou de {limite}s" if estourou else str(erro or "erro local")[:120]
-            print(f"{eid}: falhou no ollama ({motivo}); tentando o proximo")
-            registrar({"evento": "falha_local", "exec": eid, "job": j["job"], "motivo": motivo})
+        # Executor gratis que nao entregou cede a vez NA HORA, sem gastar uma rodada de correcao: estourou o
+        # tempo, deu erro, ou terminou sem mudar nada (perdeu a tarefa, so conversou). O worktree volta ao
+        # que era antes dele e o fracasso entra no historico, de onde o ordenar_por_acerto aprende.
+        if not estourou and (rc != 0 or erro) and FORA_DO_AR_RE.search(f"{erro or ''}\n{err[-3000:]}"):
+            ate = marcar_esgotado(eid, FORA_DO_AR_H)
+            print(f"{eid}: servico fora do ar (pulado ate {ate}, sem contar como derrota); tentando o proximo")
+            registrar({"evento": "fora_do_ar", "exec": eid, "ate": ate})
+            restaurar_wt(j["wt"], foto)
+            ultima_falha = res
             continue
-        return {"exec": eid, "sessao": sessao_n, "texto": texto_r, "tin": tin, "tout": tout, "erro": erro,
-                "rc": rc, "estourou": estourou}
+        motivo = None
+        if gratis:
+            if estourou:
+                motivo = f"passou de {limite}s"
+            elif rc != 0 or erro:
+                motivo = str(erro or f"saiu com {rc}")[:120]
+            elif (not duvida(texto_r) and not j.get("pode_nao_mudar") and len(execs) > 1
+                  and foto_wt(j["wt"]) == foto):
+                motivo = "terminou sem alterar nenhum arquivo"
+        if motivo:
+            print(f"{eid}: falhou ({motivo}); tentando o proximo")
+            registrar({"evento": "falha_local", "exec": eid, "job": j["job"], "tipo": j.get("tipo"),
+                       "motivo": motivo, "segundos": round(time.time() - inicio)})
+            restaurar_wt(j["wt"], foto)
+            ultima_falha = res
+            continue
+        return res
+    if ultima_falha:  # todos falharam: devolve a ultima falha para a rodada reportar (nao deixa o job orfao)
+        ultima_falha["erro"] = ultima_falha["erro"] or "todos os executores da lista falharam"
+        return ultima_falha
     sys.exit("nenhum executor disponivel na lista (todos esgotados ou sem cota)")
 
 
@@ -1328,6 +1535,12 @@ def cmd_run(a):
             sys.exit("a pasta nao e um repositorio git; rode 'git init' e faca um commit inicial (o worktree isola o executor)")
         if git(repo, "rev-parse", "--verify", "HEAD").returncode != 0:
             sys.exit("repositorio sem nenhum commit; faca um commit inicial")
+        licoes = ler_licoes(repo)
+        if licoes:
+            # o que as validacoes deste projeto ja reprovaram por falta de especificacao: o executor ja recebe
+            texto += ("\n\n## Licoes de validacoes anteriores deste projeto (valem tambem para esta tarefa, "
+                      "no que se aplicar)\n" + "\n".join(licoes) + "\n")
+            print(f"licoes: {len(licoes)} do projeto anexadas a tarefa")
         job = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
         os.makedirs(job_dir(job), exist_ok=True)
         wt, base, aviso = criar_worktree(os.path.normpath(repo), job)
@@ -1348,6 +1561,12 @@ def cmd_run(a):
         gasto += r["tin"] + r["tout"]
         v = r["verif"]
         if not v or v["ok"] or r["status"] in ("TIMEOUT", "DUVIDA"):
+            break
+        if v.get("quebrada"):
+            # Antes: o executor recebia "corrija o codigo" e gastava minutos ate escalar a duvida sobre o ambiente
+            parou = (f"a VERIFICACAO nao conseguiu rodar (exit {v['rc']}: comando ou arquivo nao encontrado). Ela roda "
+                     f"dentro do worktree {j['wt']}: use caminho absoluto para scripts fora do repo. Corrija com "
+                     f"'run --continuar {j['job']} --verificar \"...\" \"rode a verificacao\"' ou confira o diff e junte")
             break
         v["assinatura"] = assinatura(v["saida"])
         if len(rodadas) > a.tentativas:
@@ -1463,10 +1682,15 @@ def rodada(j, execs, texto, cat, a, eu):
     verif = None
     if j.get("verificar") and status not in ("TIMEOUT", "DUVIDA"):
         try:
-            v = subprocess.run(j["verificar"], cwd=j["wt"], shell=True, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            cmdv = comando_verificar(j["verificar"])
+            v = subprocess.run(cmdv, cwd=j["wt"], shell=isinstance(cmdv, str),
+                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
                                capture_output=True, text=True, encoding="utf-8", errors="replace",
                                stdin=subprocess.DEVNULL, timeout=600)
             verif = {"ok": v.returncode == 0, "rc": v.returncode, "saida": v.stdout + v.stderr}
+            if v.returncode in (126, 127) or VERIF_QUEBRADA_RE.search(verif["saida"][:2000]):
+                # o proprio comando de verificacao nao rodou (nao achou o programa/script): nao e culpa do codigo
+                verif["quebrada"] = True
             if verif["ok"] and VAZIA_RE.search(verif["saida"]):
                 # unittest no Python < 3.12 sai com 0 quando nao acha teste; um executor que nao entrega teste passaria
                 verif.update(ok=False, vazia=True)
@@ -1484,6 +1708,24 @@ def rodada(j, execs, texto, cat, a, eu):
     return {"exec": res["exec"], "rodada": j["rodada"], "texto_r": res["texto"], "erro": erro, "status": status,
             "codigo": codigo, "verif": verif, "pendente": pendente, "tin": tin, "tout": tout, "consultas": consultas,
             "seg": round(time.time() - inicio), "tarefa_c": tarefa_c}
+
+
+def git_bash():
+    """bash.exe do Git for Windows (o 'bash' do System32 e o WSL, outro sistema de arquivos)."""
+    g = shutil.which("git")
+    cands = [os.path.join(os.path.dirname(os.path.dirname(g)), "bin", "bash.exe")] if g else []
+    cands += [r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files (x86)\Git\bin\bash.exe"]
+    return next((c for c in cands if os.path.isfile(c)), None)
+
+
+def comando_verificar(cmd):
+    """No Windows o shell=True e o cmd.exe: 'bash script.sh | grep ...' falhava com 'bash nao reconhecido' e o
+    executor parava com duvida sobre o ambiente. Verificacao que comeca com bash/sh roda inteira no Git Bash."""
+    if os.name == "nt" and re.match(r"\s*(bash|sh)\s", cmd):
+        gb = git_bash()
+        if gb:
+            return [gb, "-c", cmd]
+    return cmd
 
 
 def registrar_rodada(j, r, auto=False, devolvido_c=0, avisos=0, stat=None):
@@ -1548,6 +1790,125 @@ def cmd_consultar(a):
     sys.exit(1 if erro else 0)
 
 
+LICOES_MAX = 40  # linhas guardadas por projeto; o run anexa so as ultimas LICOES_RUN
+LICOES_RUN = 15
+LICOES_RE = re.compile(r"^[\s*#]*LI[CÇ][OÕ]ES[\s*]*:[\s*]*(.*)$", re.I)
+SECAO_RE = re.compile(r"^[\s*#]*[A-ZÇÃÕÁÉÍÓÚ][A-ZÇÃÕÁÉÍÓÚ ]{3,}[\s*]*:")  # titulo de secao, nunca linha '- '
+
+
+def licoes_arq(repo):
+    return os.path.join(CASA, "licoes", os.path.basename(os.path.normpath(repo)) + ".md")
+
+
+def ler_licoes(repo, n=LICOES_RUN):
+    try:
+        with open(licoes_arq(repo), encoding="utf-8") as f:
+            linhas = [l.rstrip() for l in f if l.startswith("- ")]
+    except OSError:
+        return []
+    return linhas[-n:] if n else linhas
+
+
+def extrair_licoes(texto):
+    """Linhas '- ...' da secao LICOES da resposta do revisor (ate a proxima secao em maiusculas)."""
+    out, dentro = [], False
+    for l in (texto or "").splitlines():
+        m = LICOES_RE.match(l)
+        if m:
+            dentro = True
+            resto = m.group(1).strip()
+            if resto.startswith("- "):
+                out.append(resto)
+            continue
+        if dentro and SECAO_RE.match(l):
+            break
+        if dentro and l.strip().startswith(("- ", "* ")):
+            out.append("- " + l.strip()[2:].strip())
+    return [l for l in out if len(l) > 6 and "nenhuma" not in l.lower()[:12]]
+
+
+def gravar_licoes(repo, novas):
+    """Junta as licoes novas as do projeto, sem repetir, e guarda as ultimas LICOES_MAX. Devolve quantas entraram."""
+    antigas = ler_licoes(repo, 0)
+    vistas = {re.sub(r"\W+", " ", l.lower()).strip() for l in antigas}
+    entram = []
+    for l in novas:
+        k = re.sub(r"\W+", " ", l.lower()).strip()
+        if k not in vistas:
+            vistas.add(k)
+            entram.append(l)
+    if entram:
+        os.makedirs(os.path.dirname(licoes_arq(repo)), exist_ok=True)
+        with open(licoes_arq(repo), "w", encoding="utf-8") as f:
+            f.write("# Licoes das validacoes deste projeto (o maestro anexa as ultimas a cada tarefa nova)\n\n"
+                    + "\n".join((antigas + entram)[-LICOES_MAX:]) + "\n")
+    return len(entram)
+
+
+def validacao_anterior(repo, horas=12):
+    """A validacao mais recente do mesmo projeto nas ultimas `horas` que chegou a um veredito (uma que caiu por
+    timeout ou erro e pulada): (id, resposta, meta) ou None."""
+    pasta = os.path.join(CASA, "validacoes")
+    try:
+        ids = sorted(os.listdir(pasta), reverse=True)
+    except OSError:
+        return None
+    for vid in ids:
+        meta = ler_json(os.path.join(pasta, vid, "meta.json"), None)
+        resp = os.path.join(pasta, vid, "resposta.md")
+        if not meta or os.path.normcase(meta.get("repo", "")) != os.path.normcase(repo) or not os.path.isfile(resp):
+            continue
+        if time.time() - os.path.getmtime(resp) > horas * 3600:
+            return None
+        with open(resp, encoding="utf-8") as f:
+            texto = f.read().strip()
+        if VEREDITO_RE.search(texto):
+            return vid, texto, meta
+    return None
+
+
+def foto_arvore(pasta):
+    """Hash de uma arvore git com o estado atual da pasta (commitado, modificado e novo nao ignorado), feita
+    num indice temporario: nao toca o indice nem o working tree do usuario. None se falhar."""
+    os.makedirs(os.path.join(CASA, "validacoes"), exist_ok=True)
+    idx = os.path.join(CASA, "validacoes", f".idx-{secrets.token_hex(4)}")
+    env = {**os.environ, "GIT_INDEX_FILE": idx}
+    try:
+        for args in (["read-tree", "HEAD"], ["add", "-A", "--", ".", *LIXO], ["write-tree"]):
+            r = subprocess.run(["git", *args], cwd=pasta, env=env, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL)
+            if r.returncode != 0:
+                return None
+        return r.stdout.strip() or None
+    finally:
+        try:
+            os.remove(idx)
+        except OSError:
+            pass
+
+
+def regua(texto):
+    """Veredito que a regua do VALIDA manda dar, pelas etiquetas da secao PROBLEMAS: REPROVADO com [bloqueia],
+    APROVADO COM RESSALVAS com [importante], APROVADO sem nenhum dos dois. None se a secao nao foi achada."""
+    m = re.search(r"^[\s*#]*PROBLEMAS[\s*]*:(.*?)(?=^[\s*#]*(?:FORA DO VEREDITO|LI[CÇ][OÕ]ES|CONFERIDO)[\s*]*:|\Z)",
+                  texto or "", re.S | re.M | re.I)
+    if not m:
+        return None
+    sec = m.group(1).lower()
+    if "[bloqueia" in sec:
+        return "REPROVADO"
+    if "[importante" in sec:
+        return "APROVADO COM RESSALVAS"
+    return "APROVADO"
+
+
+def cmd_licoes(a):
+    repo = git(os.path.abspath(a.dir), "rev-parse", "--show-toplevel").stdout.strip() or os.path.abspath(a.dir)
+    linhas = ler_licoes(repo, 0)
+    print(f"licoes de {os.path.basename(os.path.normpath(repo))} ({licoes_arq(repo)}):")
+    print("\n".join(linhas) if linhas else "  nenhuma ainda")
+
+
 def cmd_validar(a):
     """Um modelo de topo (Opus ou Fable, esforco medio) revisa o trabalho feito por qualquer modelo e da o
     veredito. Fonte do trabalho: um job do maestro (--job) ou as mudancas do projeto desde --base (padrao HEAD,
@@ -1561,16 +1922,17 @@ def cmd_validar(a):
         if not os.path.isdir(j["wt"]):
             sys.exit("worktree do job nao existe mais (ja juntado? valide o projeto sem --job)")
         pasta, diff, stat, novos = j["wt"], mudancas(j), mudancas(j, stat=True), []
+        repo = j["repo"]
         try:
             with open(os.path.join(job_dir(j["job"]), "tarefa-r1.md"), encoding="utf-8") as f:
-                pedido += "\n\n## Tarefa entregue ao executor\n\n" + f.read()
+                pedido += "\n\n## Especificacao entregue ao executor\n\n" + f.read()
         except OSError:
             pass
     else:
         pasta = git(os.path.abspath(a.dir), "rev-parse", "--show-toplevel").stdout.strip()
         if not pasta:
             sys.exit("a pasta nao e um repositorio git: o revisor precisa de um diff para julgar")
-        pasta = os.path.normpath(pasta)
+        pasta = repo = os.path.normpath(pasta)
         if git(pasta, "rev-parse", "--verify", a.base).returncode != 0:
             sys.exit(f"--base {a.base} nao existe neste repositorio")
         diff = git(pasta, "diff", a.base, "--", ".", *LIXO).stdout
@@ -1587,9 +1949,31 @@ def cmd_validar(a):
     arq_diff = os.path.join(pasta_v, "diff.patch")
     with open(arq_diff, "w", encoding="utf-8", newline="\n") as f:
         f.write(diff)
-    partes = [f"# O que foi pedido\n\n{pedido.strip()}\n",
-              f"# O que mudou\n\nResumo:\n{stat.strip() or '(so arquivos novos)'}\n\n"
-              f"Diff completo ({len(diff.splitlines())} linhas): {arq_diff}\nLeia o diff inteiro antes de julgar."]
+    arvore = foto_arvore(pasta)
+    ant = None if a.anterior == "nenhuma" else validacao_anterior(repo)
+    with open(os.path.join(pasta_v, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump({"repo": repo, "base": None if a.job else a.base, "job": a.job, "arvore": arvore}, f)
+    partes = [f"# O que foi pedido\n\n{pedido.strip()}\n"]
+    if ant:
+        partes.append(f"# Validacao anterior ({ant[0]}), desta mesma sessao de trabalho\n\n"
+                      "Confira primeiro se cada problema dela foi corrigido. Item que o pedido acima diz que o usuario "
+                      "decidiu nao corrigir nao volta como problema. Se o pedido acima for outro trabalho, ignore esta "
+                      f"secao.\n\n{ant[1][-6000:]}\n")
+    n_diff = len(diff.splitlines())
+    partes += [f"# O que mudou\n\nResumo:\n{stat.strip() or '(so arquivos novos)'}\n\n"
+              f"Diff completo ({n_diff} linhas): {arq_diff}\nLeia o diff inteiro antes de julgar."]
+    inter = None
+    if ant and arvore and ant[2].get("arvore"):
+        r_i = git(pasta, "diff", ant[2]["arvore"], arvore, "--", ".", *LIXO)
+        if r_i.returncode == 0:
+            inter = r_i.stdout
+            arq_i = os.path.join(pasta_v, "diff-desde-anterior.patch")
+            with open(arq_i, "w", encoding="utf-8", newline="\n") as f:
+                f.write(inter)
+            partes.append("# O que mudou desde a validacao anterior\n\n" + (
+                f"{len(inter.splitlines())} linhas: {arq_i}\nComece por ele: e a correcao. Leia-o inteiro e confira "
+                "se a correcao trouxe problema novo nos caminhos que ela toca."
+                if inter.strip() else "Nada mudou desde a validacao anterior: nenhuma correcao foi feita."))
     if novos:
         partes.append("Arquivos novos ainda nao rastreados pelo git (leia na pasta do projeto):\n"
                       + "\n".join(f"- {n}" for n in novos[:200]))
@@ -1604,18 +1988,26 @@ def cmd_validar(a):
     texto = "\n\n".join(partes) + "\n"
     with open(os.path.join(pasta_v, "pedido.md"), "w", encoding="utf-8") as f:
         f.write(texto)
-    val = VALIDADORES[a.modelo]
+    val = {**VALIDADORES[a.modelo], "esforco": a.esforco}
     eid = f"validar-{a.modelo}"
+    if n_diff > 4000 and a.esforco == "medium" and not (inter and inter.strip()):
+        print(f"AVISO: diff de {n_diff} linhas; em esforco medio o revisor le por amostragem e cada rodada pode "
+              "achar coisa nova. Para uma revisao completa: --esforco high, ou valide por partes (--base)")
     print(f"validando com {val['modelo']} (esforco {val['esforco']}) em {pasta} ...", flush=True)
     r = perguntar([eid], {eid: val}, VALIDA, texto, pasta, a)
     if not r:
         sys.exit(f"{eid} indisponivel (cota esgotada?). Tente o outro: --modelo {'fable' if a.modelo == 'opus' else 'opus'}")
     _, texto_r, tin, tout, erro, seg = r
     m = VEREDITO_RE.search(texto_r or "")
-    veredito = m.group(1).upper() if m else None
+    veredito = dito = m.group(1).upper() if m else None
+    if veredito and not erro:
+        # o veredito segue a regua pelas etiquetas, nao a impressao do revisor
+        veredito = regua(texto_r) or veredito
     with open(os.path.join(pasta_v, "resposta.md"), "w", encoding="utf-8") as f:
         f.write(texto_r or "")
+    novas = gravar_licoes(repo, extrair_licoes(texto_r)) if veredito else 0
     registrar({"evento": "validacao", "exec": eid, "status": "ERRO" if erro else "ok", "veredito": veredito,
+               "veredito_dito": dito, "esforco": a.esforco, "revalidacao": bool(ant),
                "segundos": seg, "tokens_in": tin, "tokens_out": tout, "pedido_c": len(texto),
                "resposta_c": len(texto_r or ""), "job": a.job, "repo": os.path.basename(pasta)})
     print(f"validacao | {val['modelo']} | {'TIMEOUT' if erro == 'TIMEOUT' else 'ERRO' if erro else 'ok'} "
@@ -1623,6 +2015,15 @@ def cmd_validar(a):
     if erro:
         print("erro:", str(erro)[:400])
     print(devolver(texto_r or "(sem resposta)", a.max_texto, "validacao"))
+    if veredito and veredito != dito:
+        print(f"VEREDITO PELA REGUA: {veredito} (o revisor escreveu {dito}, mas as etiquetas dos PROBLEMAS mandam "
+              f"{veredito}: [bloqueia] reprova, [importante] da ressalva, o resto nao pesa)")
+    if ant:
+        print(f"(revalidacao: a validacao anterior {ant[0]} foi junto para o revisor"
+              + (f"; {len(inter.splitlines())} linhas mudaram desde ela)" if inter is not None else ")"))
+    if novas:
+        print(f"licoes: {novas} nova(s) guardada(s) em {licoes_arq(repo)}; entram sozinhas nas proximas tarefas "
+              "do maestro neste projeto (veja com: maestro.py licoes)")
     if erro or not veredito:
         if not erro:
             print("AVISO: a resposta nao trouxe a linha VEREDITO; trate como nao validado")
@@ -1737,6 +2138,19 @@ def cmd_sugerir(a):
         junt = [finais[jb][0] == "juntar" for jb in jobs if jb in finais]
         pct = lambda xs: f"{100 * sum(xs) // len(xs)}%" if xs else "-"
         print(f"{tipo:12} {eid:18} {len(lst):>7} {pct(ver):>8} {pct(primeira):>6} {pct(junt):>8} {sum(e['segundos'] for e in lst) // len(lst):>7}")
+    # O que o maestro aprendeu: tentativas por (job, executor), contando quem falhou e cedeu a vez
+    tents = _tentativas()
+    rotas = ler_catalogo().get("rotas", {})
+    print(f"\nAPRENDIZADO (ultimos {ACERTO_DIAS} dias; tentativa = executor num job; ganha quem entregou o que foi juntado)")
+    for tipo, lista in rotas.items():
+        if a.tipo and tipo != a.tipo:
+            continue
+        placar = acerto(tipo, tentativas=tents)
+        efetiva = ordenar_por_acerto(lista, tipo, silencioso=True)
+        print(f"  {tipo:12} ordem efetiva: " + " > ".join(
+            f"{e}({placar[e][0]}/{placar[e][1]})" if placar.get(e, [0, 0])[1] else f"{e}(-)" for e in efetiva))
+        if efetiva != lista:
+            print(f"  {'':12} catalogo:      " + " > ".join(lista))
 
 
 def economia(ev, cat, periodo):
@@ -1974,9 +2388,15 @@ def main():
     v.add_argument("--base", default="HEAD", help="revisa as mudancas desde esta ref (padrao: o que nao foi commitado)")
     v.add_argument("--job", help="revisa o worktree de um job do maestro em vez do projeto")
     v.add_argument("--verificar", help="comando rodado antes; o resultado vai junto para o revisor")
+    v.add_argument("--anterior", choices=["auto", "nenhuma"], default="auto",
+                   help="auto: manda junto a ultima validacao deste projeto nas ultimas 12 h (revalidacao)")
+    v.add_argument("--esforco", choices=["medium", "high", "xhigh"], default="medium",
+                   help="esforco do revisor; high para diff grande ou mudanca critica (gasta mais)")
     v.add_argument("--timeout", type=int, default=1500)
     v.add_argument("--horas-cota", type=float, default=5)
-    v.add_argument("--max-texto", type=int, default=6000)
+    v.add_argument("--max-texto", type=int, default=12000, help="resposta maior que isso e cortada no meio")
+    li = sub.add_parser("licoes", help="licoes que as validacoes guardaram para este projeto (entram nas tarefas novas)")
+    li.add_argument("--dir", default=".")
     o = sub.add_parser("rota", help="quem fica abaixo/igual e quem fica acima de voce; nao gasta nada")
     o.add_argument("--eu")
     o.add_argument("--tipo")
@@ -2002,7 +2422,7 @@ def main():
     if a.cmd in ("run", "consultar", "validar", "liberar") and profundidade() >= 1:
         sys.exit("voce foi lancado pelo maestro (MAESTRO_EU definido): executor nao delega nem consulta. "
                  "Faca a tarefa; se faltar uma decisao, responda ESCALAR: <pergunta>")
-    {"catalogo": cmd_catalogo, "run": cmd_run, "consultar": cmd_consultar, "validar": cmd_validar, "rota": cmd_rota, "diff": cmd_diff, "juntar": cmd_juntar, "descartar": cmd_descartar,
+    {"catalogo": cmd_catalogo, "run": cmd_run, "consultar": cmd_consultar, "validar": cmd_validar, "licoes": cmd_licoes, "rota": cmd_rota, "diff": cmd_diff, "juntar": cmd_juntar, "descartar": cmd_descartar,
      "jobs": cmd_jobs, "cota": cmd_cota, "sugerir": cmd_sugerir, "ganho": cmd_ganho,
      "recursos": cmd_recursos, "liberar": cmd_liberar, "reabrir": cmd_reabrir}[a.cmd](a)
 

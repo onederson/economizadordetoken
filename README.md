@@ -105,6 +105,8 @@ Assim o esquema funciona com **qualquer** modelo no comando: um Opus desce quase
 
 **Ordem de gasto.** Dentro do mesmo nivel, o maestro respeita a ordem dos "bolsos" de cota: **1) Ollama local (gratis) 2) OmniRoute (gratis) 3) Google/agy 4) Anthropic/Claude**. So passa ao proximo bolso quando o anterior esta sem cota (ou quando o modelo local nao cabe na memoria e o usuario opta por pular).
 
+**Qualidade antes de custo (aprendizado).** A ordem de gasto vale entre executores que entregam igual. Cada executor em cada job conta como uma tentativa, e ganha so quem entregou o trabalho que foi juntado. O local que falha e e salvo pelo agy leva a derrota. Vai para o fim da rota quem fica mais de 15 pontos abaixo do melhor da rota (com pelo menos 3 tentativas) ou perde 3 seguidas em qualquer tipo. Executor gratis que estoura o tempo, da erro ou termina sem alterar nada cede a vez na hora, e o worktree volta ao estado anterior. Servico fora do ar (ECONNREFUSED, 502/503) e pulado por 30 min sem contar derrota. Se o modelo ou a configuracao de um executor muda no catalogo, o historico antigo dele deixa de contar. `maestro sugerir` mostra o placar e a ordem efetiva de cada rota.
+
 ---
 
 ## Requisitos
@@ -338,24 +340,47 @@ A skill faz o modelo da sessao, seja qual for, juntar o que voce pediu (com as s
 maestro validar --modelo opus|fable --dir PROJ --tarefa pedido.md [--base REF | --job JOB] [--verificar "cmd"]
 ```
 
-O maestro grava o diff completo em `~/.maestro/validacoes/<id>/` e chama o **Claude Opus 5.5** ou o **Claude Fable 5.2** com **esforco medio**, so leitura, no papel de um engenheiro senior com 50 anos de experiencia. Ele confere, nesta ordem: se o pedido foi atendido por inteiro, se o codigo esta correto (bordas, erros, quem chama o que mudou), se os testes existem e testam de verdade (ele roda os testes), e regressoes, seguranca, segredos e sobras. A resposta tem no maximo 40 linhas:
+O maestro grava o diff completo em `~/.maestro/validacoes/<id>/` e chama o **Claude Opus 5.5** ou o **Claude Fable 5.2** com **esforco medio**, so leitura, no papel de um engenheiro senior com 50 anos de experiencia. Ele confere, nesta ordem: os itens da validacao anterior (se houver), se o pedido foi atendido por inteiro (e o que foi feito sem pedido), se todo estado que o trabalho abre fecha em todos os caminhos (erro, timeout, cancelamento, troca de modo), quem chama o que mudou, se os testes cobrem os caminhos de falha (ele roda os testes), e seguranca, segredos e sobras.
+
+**Regua fixa**, para o veredito nao depender do humor do revisor nem subir a cada rodada:
+
+- `[bloqueia]`: no uso pedido, resultado errado, dado perdido ou exposto, travamento, ou algo nao pedido com efeito externo. Da REPROVADO.
+- `[importante]`: bug real num cenario plausivel, ou teste que deixaria esse bug passar. Da APROVADO COM RESSALVAS.
+- Os dois exigem **cenario concreto** (entrada -> resultado errado), de preferencia reproduzido. Sem cenario, nao e problema.
+- Cada problema vem como **classe**: todas as ocorrencias, a invariante que a correcao deve garantir e o teste que pega a classe inteira. Isso evita a correcao que conserta 1 de 4 caminhos e gera outra rodada.
+- **Origem**: `[spec]` (a especificacao nao disse e o executor nao tinha como saber) ou `[executor]` (estava dito, ou e engenharia basica).
+- Problema antigo, o que so se confirma ao vivo e ja foi declarado pendente, estilo e melhorias nao pedidas vao em **FORA DO VEREDITO** e nao pesam. Sem `[bloqueia]` nem `[importante]`, o veredito e **APROVADO**.
 
 ```
 VEREDITO: REPROVADO
 RESUMO: o filtro por data foi feito, mas a paginacao quebrou.
 PROBLEMAS:
-1. [bloqueia] api/lista.py:88 offset calculado antes do filtro; a pagina 2 repete itens. Aplicar o filtro antes.
-2. [menor] testes/test_lista.py nao cobre lista vazia.
-CONFERIDO: pytest -q -> 41 passed, 1 failed (test_paginacao); li api/lista.py e quem chama listar().
+1. [bloqueia] [spec] api/lista.py:88 e api/busca.py:41 calculam o offset antes do filtro; pagina 2 com filtro
+   repete itens. Invariante: o offset sempre se aplica a lista ja filtrada. Teste: filtro + pagina 2 nos dois.
+FORA DO VEREDITO: api/lista.py:12 nome confuso (antigo).
+LICOES:
+- Toda tarefa que mexe em listagem diz se filtro, ordenacao e paginacao se aplicam nessa ordem.
+CONFERIDO: pytest -q -> 41 passed, 1 failed (test_paginacao); li api/lista.py e quem chama listar(); nao li web/.
 ```
+
+**O maestro aplica a regua:** o veredito sai das etiquetas da secao PROBLEMAS, nao da impressao do revisor. Se ele escrever "RESSALVAS" listando so `[menor]`, sai `VEREDITO PELA REGUA: APROVADO`, e o codigo de saida segue a regua. O historico guarda os dois (`veredito` e `veredito_dito`).
+
+**Revalidacao:** a validacao anterior do mesmo projeto (ate 12 h, pulando as que cairam sem veredito) vai junto sozinha. Cada validacao guarda uma foto do estado do projeto (uma arvore git feita num indice temporario, sem tocar o seu indice), e a seguinte recebe o **diff desde a anterior**: o revisor comeca pela correcao em vez de reler tudo. Ele diz, item a item, o que foi corrigido, nao reaponta o que o usuario decidiu nao corrigir e so traz problema novo se for `[bloqueia]` ou `[importante]`, dizendo se veio da correcao ou se escapou antes.
+
+**Diff grande:** em esforco medio o revisor le por amostragem (as validacoes reais levaram de 44 a 136 s, mesmo com diffs de 5 a 12 mil linhas), entao cada rodada pode achar coisa nova. Acima de 4000 linhas o maestro avisa e sugere `--esforco high` ou validar por partes.
+
+**Licoes:** as linhas de `LICOES` (problemas de origem `[spec]`) ficam em `~/.maestro/licoes/<projeto>.md`, sem repetir, ate 40. Cada `maestro run` novo nesse projeto anexa as ultimas 15 a tarefa, e `maestro licoes --dir PROJ` mostra todas. Assim o que reprovou por falta de especificacao entra sozinho na proxima especificacao. O `run` tambem avisa quando uma tarefa grande nao diz o que acontece nos caminhos de falha.
 
 | Opcao | Padrao | O que faz |
 |---|---|---|
 | `texto` ou `--tarefa ARQ` | obrigatorio | o que o usuario pediu; sem isso o revisor nao tem contra o que julgar |
-| `--modelo opus\|fable` | `opus` | `claude-opus-5-5` ou `claude-fable-5-2`, sempre com `--effort medium` |
+| `--modelo opus\|fable` | `opus` | `claude-opus-5-5` ou `claude-fable-5-2`, com o esforco de `--esforco` |
 | `--base REF` | `HEAD` | revisa as mudancas desde essa ref, mais arquivos novos. Padrao: o que nao foi commitado. Trabalho ja commitado: `--base HEAD~2`, `--base main` |
-| `--job JOB` | | revisa o worktree de um job do maestro antes de juntar (a tarefa entregue ao executor vai junto) |
+| `--job JOB` | | revisa o worktree de um job do maestro antes de juntar (a especificacao entregue ao executor vai junto) |
 | `--verificar "cmd"` | | roda antes e manda o resultado ao revisor |
+| `--anterior auto\|nenhuma` | `auto` | `auto` manda junto a ultima validacao do projeto nas ultimas 12 h; `nenhuma` quando e outro trabalho |
+| `--esforco medium\|high\|xhigh` | `medium` | `high` para diff grande ou mudanca critica (dados, dinheiro, seguranca); gasta mais |
+| `--max-texto N` | `12000` | resposta maior que isso volta com o meio cortado (a completa fica gravada) |
 | `--timeout S` | `1500` | |
 
 Saida: **0** aprovado (com ou sem ressalvas), **3** reprovado, **1** erro ou resposta sem `VEREDITO`, **2** timeout. Toda validacao entra no historico (`ganho` mostra o gasto).
@@ -375,6 +400,7 @@ Saida: **0** aprovado (com ou sem ressalvas), **3** reprovado, **1** erro ou res
 | `maestro run ...` | delegar (ver abaixo) |
 | `maestro consultar --eu N "duvida"` | subir uma decisao para o modelo mais barato acima de voce |
 | `maestro validar --modelo opus\|fable "pedido"` | revisao de senior do trabalho feito (ver [Validar](#validar-revisao-de-senior-com-opus-ou-fable)) |
+| `maestro licoes [--dir PROJ]` | licoes que as validacoes guardaram para o projeto (entram sozinhas nas tarefas novas) |
 | `maestro diff JOB [--stat] [--arquivo CAMINHO] [--max 400]` | o que o executor mudou |
 | `maestro juntar JOB` | aplica no projeto real (sem commit) e apaga o worktree |
 | `maestro descartar JOB` | apaga o worktree sem aplicar |
@@ -599,7 +625,7 @@ O `agy` nao tem como desligar hooks por chamada (o ai-memory se registra em `~/.
 
 ## Testes
 
-- `python -m unittest discover -s testes -v`: 65 testes de regressao, sem modelo e sem rede (guarda, instalador e skills `validar` em HOME temporario, executor sem plugins, verificacao vazia, modelo local travado, rota por taxa de acerto, troca do gratis que falhou, marcador do `ai-memory`, loop de correcao automatica, `ganho --comparar`, `validar`, `juntar -C1`, folga de memoria para modelo local, agrupamento de apps liberaveis e `reabrir`).
+- `python -m unittest discover -s testes -v`: 83 testes de regressao, sem modelo e sem rede (aprendizado por tentativa e por margem para o melhor da rota, sequencia ruim, historico zerado ao mudar a configuracao, verificacao com bash no Git Bash, servico fora do ar, guarda, instalador e skills `validar` em HOME temporario, executor sem plugins, verificacao vazia, modelo local travado, rota por taxa de acerto, troca do gratis que falhou, marcador do `ai-memory`, loop de correcao automatica, `ganho --comparar`, `validar` (regua, revalidacao com diff desde a anterior, licoes e esforco), `juntar -C1`, folga de memoria para modelo local, agrupamento de apps liberaveis e `reabrir`).
 - `python testes/smoke.py`: confere esta maquina (instalado == repo, hooks, memoria limpa, `rota`). Opcoes: `--modelo` (Haiku confirma que o executor nao ve o ai-memory), `--completo` (tarefa real ate a verificacao), `--inspiracoes` (headroom e rtk desde a ultima revisao), `--tudo`.
 
 Rode os dois depois de mudar o maestro e antes de subir.

@@ -455,12 +455,17 @@ class TestCorrecoesExecutor(unittest.TestCase):
                 raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
             return subprocess.CompletedProcess(cmd, 0, ok_json, "")
 
+        soltos = []
         with unittest.mock.patch.object(modulo.shutil, "which", return_value="claude"), \
                 unittest.mock.patch.object(modulo, "garantir_ollama", return_value=True), \
                 unittest.mock.patch.object(modulo, "esgotados", return_value={}), \
+                unittest.mock.patch.object(modulo, "foto_wt", return_value="tree"), \
+                unittest.mock.patch.object(modulo, "restaurar_wt"), \
+                unittest.mock.patch.object(modulo, "soltar_modelo", side_effect=lambda u, m: soltos.append(m)), \
                 unittest.mock.patch.object(modulo.subprocess, "run", side_effect=falso_run):
             r = modulo.executar({"job": "t1", "rodada": 1, "wt": wt, "sessao": None}, ["ollama-x", "cc-x"], cat,
                                 types.SimpleNamespace(timeout=1800, horas_cota=5))
+        self.assertEqual(soltos, ["m"])  # o modelo local sai da memoria assim que termina
         self.assertEqual(r["exec"], "cc-x")
         self.assertEqual(chamadas, [960, 1860])  # o local usa o timeout proprio; o proximo, o do run
         with open(os.path.join(self.temp_dir, ".maestro", "historico.jsonl"), encoding="utf-8") as f:
@@ -503,16 +508,73 @@ class TestRotaPorAcerto(unittest.TestCase):
             for evento, eid, tipo, data in linhas:
                 f.write(json.dumps({"evento": evento, "job": "j", "exec": eid, "tipo": tipo, "data": data}) + "\n")
 
-    def test_29_fraco_vai_para_o_fim(self):
+    def tentativa(self, job, eid, final=None, tipo=None, data=None, status="ok"):
+        """Uma rodada de eid no job e, se final, o encerramento (juntar/descartar) com quem estava por ultimo."""
         import time
-        hoje = time.strftime("%Y-%m-%dT%H:%M:%S")
-        self.historico([("descartar", "gratis", None, hoje)] * 4 + [("juntar", "gratis", None, hoje)]
-                       + [("juntar", "flash", "implementar", hoje)] * 5)
+        data = data or time.strftime("%Y-%m-%dT%H:%M:%S")
+        with open(os.path.join(self.temp_dir, ".maestro", "historico.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"evento": "run", "job": job, "exec": eid, "tipo": tipo, "status": status, "data": data}) + "\n")
+            if final:
+                f.write(json.dumps({"evento": final[0], "job": job, "exec": final[1], "tipo": tipo, "data": data}) + "\n")
+
+    def test_29_fraco_vai_para_o_fim(self):
+        for n in range(4):
+            self.tentativa(f"g{n}", "gratis", ("descartar", "gratis"))
+        self.tentativa("g9", "gratis", ("juntar", "gratis"))
+        for n in range(5):
+            self.tentativa(f"f{n}", "flash", ("juntar", "flash"), tipo="implementar")
         modulo = self.importar_maestro()
         self.assertEqual(modulo.ordenar_por_acerto(["gratis", "outro", "flash"], None), ["outro", "flash", "gratis"])
         # outro tipo nao herda o placar; todos fracos = nada muda
         self.assertEqual(modulo.ordenar_por_acerto(["gratis", "flash"], "docs"), ["gratis", "flash"])
         self.assertEqual(modulo.ordenar_por_acerto(["gratis"], None), ["gratis"])
+
+    def test_29b_local_salvo_pelo_agy_conta_derrota_do_local(self):
+        """Antes so o executor final do job contava: o local que falhava e era salvo pelo agy nunca perdia."""
+        for n in range(3):
+            self.tentativa(f"j{n}", "local", tipo="implementar")
+            self.tentativa(f"j{n}", "agy", ("juntar", "agy"), tipo="implementar")
+        modulo = self.importar_maestro()
+        placar = modulo.acerto("implementar")
+        self.assertEqual(placar["local"][:2], [0, 3])
+        self.assertEqual(placar["agy"][:2], [3, 3])
+        self.assertEqual(modulo.ordenar_por_acerto(["local", "agy"], "implementar"), ["agy", "local"])
+
+    def test_29c_perde_para_o_melhor_da_rota_por_margem(self):
+        # 3/5 = 60% passa do ACERTO_MIN, mas fica 40 pontos abaixo do melhor (100%): cede a vez
+        for n in range(5):
+            self.tentativa(f"m{n}", "medio", (("juntar" if n < 3 else "descartar"), "medio"), tipo="implementar")
+            self.tentativa(f"b{n}", "bom", ("juntar", "bom"), tipo="implementar")
+        modulo = self.importar_maestro()
+        self.assertEqual(modulo.ordenar_por_acerto(["medio", "bom"], "implementar"), ["bom", "medio"])
+
+    def test_29d_sequencia_ruim_e_falha_local_em_job_aberto(self):
+        import time
+        hoje = time.strftime("%Y-%m-%dT%H:%M:%S")
+        with open(os.path.join(self.temp_dir, ".maestro", "historico.jsonl"), "a", encoding="utf-8") as f:
+            for n in range(3):  # jobs ainda abertos: a falha_local ja conta derrota
+                f.write(json.dumps({"evento": "falha_local", "job": f"a{n}", "exec": "quebrado", "tipo": "docs",
+                                    "data": hoje}) + "\n")
+        modulo = self.importar_maestro()
+        # nenhum tipo tem amostra, mas perdeu as 3 ultimas: vai para o fim em qualquer rota
+        self.assertEqual(modulo.ordenar_por_acerto(["quebrado", "x"], "implementar"), ["x", "quebrado"])
+
+    def test_29e_mudar_config_zera_historico_do_executor(self):
+        modulo = self.importar_maestro()
+        cat = {"loc": {"cli": "ollama", "modelo": "a"}}
+        with unittest.mock.patch.object(modulo, "ler_catalogo", return_value=cat):
+            self.assertEqual(modulo.vigencia_config()["loc"], "")  # primeira vez: historico vale
+            cat["loc"]["modelo"] = "b"
+            self.assertNotEqual(modulo.vigencia_config()["loc"], "")  # trocou o modelo: so vale dali em diante
+
+    def test_29f_verificacao_bash_no_windows_e_fora_do_ar(self):
+        modulo = self.importar_maestro()
+        self.assertTrue(modulo.FORA_DO_AR_RE.search("ECONNREFUSED: Unable to connect"))
+        self.assertFalse(modulo.FORA_DO_AR_RE.search("AssertionError: 503 != 200"))
+        self.assertTrue(modulo.VERIF_QUEBRADA_RE.search("'bash' is not recognized as an internal or external command"))
+        self.assertEqual(modulo.comando_verificar("python -m pytest"), "python -m pytest")
+        if os.name == "nt" and modulo.git_bash():
+            self.assertEqual(modulo.comando_verificar("bash x.sh | grep y")[1:], ["-c", "bash x.sh | grep y"])
 
     def test_30_amostra_pequena_e_historico_velho_nao_rebaixam(self):
         import time
@@ -920,6 +982,233 @@ class TestValidar(unittest.TestCase):
         self.assertIn("--model", cmd)
         self.assertIn("claude-opus-5-5", cmd)
         self.assertIn("--disallowedTools", cmd)
+
+    def test_54_validar_guarda_licoes(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        resp = (
+            "VEREDITO: APROVADO COM RESSALVAS\n"
+            "RESUMO: ok\n"
+            "PROBLEMAS:\n"
+            "1. [importante] [spec] a.py:2 x\n"
+            "LICOES:\n"
+            "- Todo recurso aberto fecha em erro e cancelamento.\n"
+            "- Nao adicione servico externo nao pedido.\n"
+            "CONFERIDO: li tudo\n"
+            "- linha que nao e licao"
+        )
+        codigo, chamadas, out, modulo = self.rodar_validar(pedido, resposta_texto=resp)
+        self.assertEqual(codigo, 0)
+        esperado = [
+            "- Todo recurso aberto fecha em erro e cancelamento.",
+            "- Nao adicione servico externo nao pedido.",
+        ]
+        self.assertEqual(modulo.ler_licoes(self.repo, 0), esperado)
+        self.assertIn("licoes: 2 nova(s)", out)
+
+    def test_55_licoes_sem_repetir(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        resp = (
+            "VEREDITO: APROVADO COM RESSALVAS\n"
+            "RESUMO: ok\n"
+            "PROBLEMAS:\n"
+            "1. [importante] [spec] a.py:2 x\n"
+            "LICOES:\n"
+            "- Todo recurso aberto fecha em erro e cancelamento.\n"
+            "- Nao adicione servico externo nao pedido.\n"
+            "CONFERIDO: li tudo\n"
+            "- linha que nao e licao"
+        )
+        c1, _, out1, modulo = self.rodar_validar(pedido, resposta_texto=resp)
+        self.assertEqual(c1, 0)
+        self.assertIn("licoes: 2 nova(s)", out1)
+        c2, _, out2, modulo = self.rodar_validar(pedido, resposta_texto=resp, extras=["--anterior", "nenhuma"])
+        self.assertEqual(c2, 0)
+        esperado = [
+            "- Todo recurso aberto fecha em erro e cancelamento.",
+            "- Nao adicione servico externo nao pedido.",
+        ]
+        self.assertEqual(modulo.ler_licoes(self.repo, 0), esperado)
+        self.assertNotIn("licoes:", out2)
+
+    def test_56_licoes_nenhuma_nao_grava(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        resp = (
+            "VEREDITO: APROVADO\n"
+            "RESUMO: ok\n"
+            "PROBLEMAS: nenhum\n"
+            "LICOES: nenhuma\n"
+            "CONFERIDO: ok"
+        )
+        codigo, _, _, modulo = self.rodar_validar(pedido, resposta_texto=resp)
+        self.assertEqual(codigo, 0)
+        self.assertEqual(modulo.ler_licoes(self.repo, 0), [])
+        self.assertFalse(os.path.exists(modulo.licoes_arq(self.repo)))
+
+    def test_57_revalidacao_leva_anterior(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        resp1 = (
+            "VEREDITO: REPROVADO\n"
+            "PROBLEMAS:\n"
+            "1. [bloqueia] [executor] a.py:2 MARCA_ANTERIOR"
+        )
+        c1, _, _, _ = self.rodar_validar(pedido, resposta_texto=resp1)
+        self.assertEqual(c1, 3)
+
+        resp2 = "VEREDITO: APROVADO\nRESUMO: ok"
+        c2, chamadas2, out2, _ = self.rodar_validar(pedido, resposta_texto=resp2)
+        self.assertEqual(c2, 0)
+        self.assertEqual(len(chamadas2), 1)
+        texto_revisor = chamadas2[0][3]
+        self.assertIn("# Validacao anterior", texto_revisor)
+        self.assertIn("MARCA_ANTERIOR", texto_revisor)
+        self.assertIn("revalidacao", out2)
+
+    def test_58_anterior_nenhuma(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        resp1 = (
+            "VEREDITO: REPROVADO\n"
+            "PROBLEMAS:\n"
+            "1. [bloqueia] [executor] a.py:2 MARCA_ANTERIOR"
+        )
+        c1, _, _, _ = self.rodar_validar(pedido, resposta_texto=resp1)
+        self.assertEqual(c1, 3)
+
+        resp2 = "VEREDITO: APROVADO\nRESUMO: ok"
+        c2, chamadas2, _, _ = self.rodar_validar(pedido, resposta_texto=resp2, extras=["--anterior", "nenhuma"])
+        self.assertEqual(c2, 0)
+        self.assertEqual(len(chamadas2), 1)
+        texto_revisor = chamadas2[0][3]
+        self.assertNotIn("MARCA_ANTERIOR", texto_revisor)
+
+    def test_59_anterior_sem_veredito_ignorada(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        resp1 = "RESUMO: so isso MARCA_X"
+        c1, _, _, _ = self.rodar_validar(pedido, resposta_texto=resp1)
+        self.assertEqual(c1, 1)
+
+        resp2 = "VEREDITO: APROVADO\nRESUMO: ok"
+        c2, chamadas2, _, _ = self.rodar_validar(pedido, resposta_texto=resp2)
+        self.assertEqual(c2, 0)
+        self.assertEqual(len(chamadas2), 1)
+        texto_revisor = chamadas2[0][3]
+        self.assertNotIn("MARCA_X", texto_revisor)
+
+    def test_60_avisos_falhas(self):
+        modulo = self.importar_maestro()
+        av1 = modulo.avisos_tarefa("x" * 900 + " `a.py`", "pytest")
+        self.assertTrue(any("caminhos de falha" in a for a in av1))
+
+        av2 = modulo.avisos_tarefa("x" * 900 + " `a.py` ## Invariantes e caminhos de falha", "pytest")
+        self.assertFalse(any("caminhos de falha" in a for a in av2))
+
+        av3 = modulo.avisos_tarefa("curto `a.py`", "pytest")
+        self.assertFalse(any("caminhos de falha" in a for a in av3))
+
+    def test_61_regua(self):
+        modulo = self.importar_maestro()
+        self.assertEqual(
+            modulo.regua("VEREDITO: APROVADO\nPROBLEMAS:\n1. [bloqueia] [spec] a.py:1 x\nCONFERIDO: ok"),
+            "REPROVADO",
+        )
+        self.assertEqual(
+            modulo.regua("VEREDITO: REPROVADO\n**PROBLEMAS:**\n1. **[importante]** [executor] a.py:1 x\nFORA DO VEREDITO: nada"),
+            "APROVADO COM RESSALVAS",
+        )
+        self.assertEqual(
+            modulo.regua("VEREDITO: APROVADO COM RESSALVAS\nPROBLEMAS:\n1. [menor] a.py:1 x\nCONFERIDO: ok"),
+            "APROVADO",
+        )
+        self.assertEqual(
+            modulo.regua("VEREDITO: APROVADO\nANTERIOR: 1. [bloqueia] corrigido\nPROBLEMAS: nenhum\nCONFERIDO: vi [bloqueia] no log"),
+            "APROVADO",
+        )
+        self.assertIsNone(modulo.regua("VEREDITO: APROVADO\nRESUMO: sem secao"))
+
+    def test_62_regua_ajusta_veredito(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        resp1 = "VEREDITO: APROVADO COM RESSALVAS\nRESUMO: ok\nPROBLEMAS:\n1. [menor] a.py:1 estilo\nCONFERIDO: ok"
+        c1, _, out1, modulo = self.rodar_validar(pedido, resposta_texto=resp1)
+        self.assertEqual(c1, 0)
+        self.assertIn("VEREDITO PELA REGUA: APROVADO", out1)
+
+        resp2 = "VEREDITO: APROVADO\nPROBLEMAS:\n1. [bloqueia] [executor] a.py:2 quebra\nCONFERIDO: ok"
+        c2, _, out2, _ = self.rodar_validar(pedido, resposta_texto=resp2)
+        self.assertEqual(c2, 3)
+        self.assertIn("VEREDITO PELA REGUA: REPROVADO", out2)
+
+        with open(modulo.HISTORICO, encoding="utf-8") as f:
+            vals = [json.loads(line) for line in f if '"evento": "validacao"' in line]
+        self.assertEqual(vals[-1]["veredito"], "REPROVADO")
+        self.assertEqual(vals[-1]["veredito_dito"], "APROVADO")
+
+    def test_63_foto_nao_mexe_no_indice(self):
+        modulo = self.importar_maestro()
+        os.makedirs(os.path.join(modulo.CASA, "validacoes"), exist_ok=True)
+        subprocess.run(["git", "add", "a.py"], cwd=self.repo, capture_output=True, check=True)
+        with open(os.path.join(self.repo, "n.py"), "w", encoding="utf-8") as f:
+            f.write("# novo\n")
+        r_antes = subprocess.run(["git", "status", "--porcelain"], cwd=self.repo, capture_output=True, text=True, check=True)
+        status_antes = r_antes.stdout
+
+        retorno = modulo.foto_arvore(self.repo)
+        self.assertIsNotNone(retorno)
+        self.assertEqual(len(retorno), 40)
+        self.assertTrue(all(c in "0123456789abcdefABCDEF" for c in retorno))
+
+        r_depois = subprocess.run(["git", "status", "--porcelain"], cwd=self.repo, capture_output=True, text=True, check=True)
+        status_depois = r_depois.stdout
+        self.assertEqual(status_depois, status_antes)
+
+    def test_64_revalidacao_manda_diff_desde_anterior(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        resp1 = "VEREDITO: REPROVADO\nPROBLEMAS:\n1. [bloqueia] [executor] a.py:2 x\nCONFERIDO: ok"
+        c1, _, _, _ = self.rodar_validar(pedido, resposta_texto=resp1)
+        self.assertEqual(c1, 3)
+
+        with open(self.arq, "w", encoding="utf-8") as f:
+            f.write("def foo():\n    return 3\n")
+
+        resp2 = "VEREDITO: APROVADO\nPROBLEMAS: nenhum\nCONFERIDO: ok"
+        c2, chamadas2, out2, _ = self.rodar_validar(pedido, resposta_texto=resp2)
+        self.assertEqual(c2, 0)
+        self.assertEqual(len(chamadas2), 1)
+        texto = chamadas2[0][3]
+        self.assertIn("# O que mudou desde a validacao anterior", texto)
+        m = re.search(r"(\S*diff-desde-anterior\.patch)", texto)
+        self.assertIsNotNone(m, f"caminho de diff-desde-anterior.patch nao encontrado no texto: {texto}")
+        arq_patch = m.group(1).strip()
+        self.assertTrue(os.path.isfile(arq_patch), f"diff-desde-anterior.patch nao existe em {arq_patch}")
+        with open(arq_patch, encoding="utf-8") as f:
+            patch_conteudo = f.read()
+        self.assertIn("return 3", patch_conteudo)
+        self.assertNotIn("return 1", patch_conteudo)
+        self.assertIn("linhas mudaram desde ela", out2)
+
+    def test_65_revalidacao_sem_mudanca(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        resp1 = "VEREDITO: REPROVADO\nPROBLEMAS:\n1. [bloqueia] [executor] a.py:2 x\nCONFERIDO: ok"
+        c1, _, _, _ = self.rodar_validar(pedido, resposta_texto=resp1)
+        self.assertEqual(c1, 3)
+
+        resp2 = "VEREDITO: APROVADO\nPROBLEMAS: nenhum\nCONFERIDO: ok"
+        c2, chamadas2, _, _ = self.rodar_validar(pedido, resposta_texto=resp2)
+        self.assertEqual(c2, 0)
+        self.assertEqual(len(chamadas2), 1)
+        texto = chamadas2[0][3]
+        self.assertIn("Nada mudou desde a validacao anterior", texto)
+
+    def test_66_esforco(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        resp = "VEREDITO: APROVADO\nPROBLEMAS: nenhum\nCONFERIDO: ok"
+        c1, chamadas1, _, modulo = self.rodar_validar(pedido, resposta_texto=resp, extras=["--esforco", "high"])
+        self.assertEqual(c1, 0)
+        self.assertEqual(chamadas1[0][1]["validar-opus"]["esforco"], "high")
+
+        c2, chamadas2, _, _ = self.rodar_validar(pedido, resposta_texto=resp)
+        self.assertEqual(c2, 0)
+        self.assertEqual(chamadas2[0][1]["validar-opus"]["esforco"], "medium")
+
+        self.assertEqual(modulo.VALIDADORES["opus"]["esforco"], "medium")
 
 
 class TestJuntar(unittest.TestCase):

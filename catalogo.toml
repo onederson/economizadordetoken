@@ -15,23 +15,27 @@
 bolsos = ["local", "omniroute", "google", "anthropic"]
 
 [rotas]
-implementar = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
-pequena     = ["ollama-gemma4", "ollama-qwen-code", "ollama-gpt-oss", "omni-free-fast", "omni-free-code", "agy-flash-medium", "agy-hydrogen-low", "cc-haiku"]
-testes      = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
-refatorar   = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
-docs        = ["ollama-gemma4", "ollama-gpt-oss", "omni-free-fast", "omni-free-code", "agy-flash-medium", "agy-hydrogen-low", "cc-haiku"]
-ler         = ["ollama-gemma4", "omni-free-fast", "ollama-qwen-code", "omni-free-code", "agy-flash-low", "cc-haiku"]
-pesquisar   = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-medium", "agy-hydrogen-low", "cc-haiku"]
+# 2026-11-24: rotas de codigo comecam no agy-flash-high (85/95 juntados) e o Ollama saiu delas (local: 2 de 27
+# rodadas aproveitadas). Qualidade antes de custo, aprovado pelo usuario. O ordenar_por_acerto do maestro ainda
+# reordena sozinho pelo historico: quem perde para o melhor da rota vai para o fim.
+implementar = ["agy-flash-high", "omni-free-code", "agy-hydrogen-medium", "cc-haiku"]
+pequena     = ["ollama-gpt-oss", "omni-free-fast", "agy-flash-medium", "ollama-gemma4", "agy-hydrogen-low", "cc-haiku"]
+testes      = ["agy-flash-high", "omni-free-code", "agy-hydrogen-medium", "cc-haiku"]
+refatorar   = ["agy-flash-high", "omni-free-code", "agy-hydrogen-medium", "cc-haiku"]
+docs        = ["ollama-gpt-oss", "ollama-gemma4", "omni-free-fast", "agy-flash-medium", "agy-hydrogen-low", "cc-haiku"]
+ler         = ["ollama-gemma4", "ollama-gpt-oss", "omni-free-fast", "agy-flash-low", "cc-haiku"]
+pesquisar   = ["agy-flash-medium", "omni-free-code", "agy-hydrogen-low", "cc-haiku"]
 dificil     = ["omni-credit-strong", "agy-hydrogen-high", "agy-neon-high", "agy-argon-high", "agy-opus", "cc-sonnet"]
 
 [ollama-gemma4]
 cli = "ollama"
-modelo = "gemma4:12b-it-qat"
+modelo = "gemma4:12b-64k"   # gemma4:12b-it-qat + num_ctx 65536; 7,8 GB, 100% GPU
 cota = "local"
 custo = "barato"
 nivel = 1
 privado = true
-timeout = 900   # modelo local travado cede a vez em 15 min (max_saida: teto de tokens, padrao 16000)
+timeout = 300   # local que nao entrega em 5 min cede a vez (antes 900 s = 15 min perdidos por falha)
+contexto = 65536   # num_ctx do modelo: o Claude Code compacta antes do ollama cortar a tarefa
 forte = "leitura, coleta de fatos, tarefas pequenas e docs; 100% local e gratis (~7 GB)"
 fraco = "modelo 12B local: nao use para implementacao complexa"
 
@@ -42,20 +46,21 @@ cota = "local"
 custo = "barato"
 nivel = 2
 privado = true
-timeout = 900   # modelo local travado cede a vez em 15 min (max_saida: teto de tokens, padrao 16000)
+timeout = 300   # local que nao entrega em 5 min cede a vez (antes 900 s = 15 min perdidos por falha)
 forte = "implementacao com especificacao fechada, testes e refatoracao; MoE 35B-A3B rapido, 100% local e gratis"
-fraco = "consome ~22 GB de RAM/VRAM; escale se a tarefa exigir decisao de arquitetura"
+fraco = "22 GB NAO cabe na GPU de 16 GB (40% roda na CPU, lento); fora das rotas. consome ~22 GB de RAM/VRAM; escale se a tarefa exigir decisao de arquitetura"
 
 [ollama-gpt-oss]
 cli = "ollama"
-modelo = "gpt-oss:20b"
+modelo = "gpt-oss:20b-64k"   # gpt-oss:20b + num_ctx 65536; 12 GB, 100% GPU (RTX 5060 Ti 16 GB)
 cota = "local"
 custo = "barato"
 nivel = 2
 privado = true
-timeout = 900   # modelo local travado cede a vez em 15 min (max_saida: teto de tokens, padrao 16000)
-forte = "fallback local nivel 2 para codigo geral, docs e tarefas pequenas (~14 GB)"
-fraco = "menos especializado em codigo que o qwen3.6-coding"
+timeout = 300   # local que nao entrega em 5 min cede a vez (antes 900 s = 15 min perdidos por falha)
+contexto = 65536
+forte = "docs e tarefas pequenas, 100% local na GPU, ~87 tokens/s"
+fraco = "perdeu feio em implementar (0 de 10): fora das rotas de codigo"
 
 [agy-flash-high]
 cli = "agy"
