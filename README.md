@@ -2,7 +2,7 @@
 
 > Cada parte da tarefa vai para o **menor modelo que da conta**. O modelo caro pensa, os baratos digitam.
 
-O **maestro** e um orquestrador de modelos de linguagem para quem trabalha com agentes de codigo no terminal (Claude Code, Antigravity CLI/agy, opencode, Gemini CLI, Codex...). Ele divide o trabalho entre modelos de varias empresas e varios precos para que os modelos caros (Opus, Fable, Sonnet, Gemini Argon/Carbon) gastem token so com o que exige inteligencia: entender, decidir, especificar e conferir. Ler muito, tentar, errar e repetir vai para modelos gratuitos ou baratos.
+O **maestro** e um orquestrador de modelos de linguagem para quem trabalha com agentes de codigo no terminal (Claude Code, Antigravity CLI/agy, opencode, Gemini CLI, Codex...). Ele divide o trabalho entre modelos de varias empresas e varios precos para que os modelos caros (Opus, Fable, Sonnet, Gemini Carbon) gastem token so com o que exige inteligencia: entender, decidir, especificar e conferir. Ler muito, tentar, errar e repetir vai para modelos gratuitos ou baratos.
 
 Sao dois pecas:
 
@@ -24,7 +24,7 @@ Sao dois pecas:
 7. [Ciclo de vida de um job](#ciclo-de-vida-de-um-job)
 8. [Escalada: quando o executor trava](#escalada-quando-o-executor-trava)
 9. [Modelos locais (Ollama) e prioridade de memoria](#modelos-locais-ollama-e-prioridade-de-memoria)
-10. [Validar: revisao de senior com Opus ou Fable](#validar-revisao-de-senior-com-opus-ou-fable)
+10. [Validar: revisao de senior com Opus (medio ou maximo)](#validar-revisao-de-senior-com-opus-medio-ou-maximo)
 11. [Referencia de comandos](#referencia-de-comandos)
 12. [O catalogo](#o-catalogo)
 13. [Como o maestro economiza token (sem ficar burro)](#como-o-maestro-economiza-token-sem-ficar-burro)
@@ -89,8 +89,8 @@ Todo modelo do catalogo tem um **nivel** de 1 a 4:
 | Nivel | Aguenta | Exemplos |
 |---|---|---|
 | **4** | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, Gemini 4 Carbon, Gemini 4 Neon xhigh, GPT de topo |
-| **3** | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Argon, Gemini 4 Neon medium/high, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
-| **2** | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, Gemini 4 Hydrogen medium/low, `ollama-qwen-code`, `ollama-gpt-oss`, free-code, modelos 'mini' |
+| **3** | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Gemini 4 Neon medium/high, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
+| **2** | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash, Gemini 4 Hydrogen medium/low, `ollama-qwen-code`, `ollama-gpt-oss`, free-code, modelos 'mini' |
 | **1** | ler, coletar, extrair fatos, edicao mecanica | Flash low/lite, `ollama-gemma4`, OmniRoute free-fast |
 
 O modelo que esta orquestrando informa quem e com `--eu` (o nivel, ou o seu id no catalogo). Para cada parte da tarefa ele pergunta: **qual e o menor nivel que resolve isto?**
@@ -119,7 +119,7 @@ Assim o esquema funciona com **qualquer** modelo no comando: um Opus desce quase
 |---|---|---|
 | `ollama` + `claude` | modelos locais (`ollama-gemma4`, `ollama-qwen-code`, `ollama-gpt-oss`) | o Ollama serve em `http://127.0.0.1:11434` (`OLLAMA_API_URL`) e o maestro chama via `claude --bare` com `ANTHROPIC_BASE_URL` |
 | `opencode` | modelos do **OmniRoute** (gratis e por credito) | precisa do provedor `omniroute` e dos agentes `worker` e `leitor` configurados (exemplo abaixo) |
-| `agy` | Gemini Flash/Hydrogen/Neon/Argon e Claude dentro do Antigravity (testado no agy 1.5.12) | usa a cota Google |
+| `agy` | Gemini Hydrogen/Neon/Carbon e Claude dentro do Antigravity (testado no agy 1.5.18) | usa a cota Google |
 | `claude` | Haiku, Sonnet, Opus (e revisores `validar`) | usa a sua assinatura do Claude Code |
 
 ### Agentes do opencode
@@ -162,7 +162,7 @@ O instalador:
 - copia `maestro.py`, `guarda.py` e `catalogo.toml` para `~/.maestro/`;
 - **preserva** um `catalogo.toml` ja instalado (use `python instalar.py --catalogo` para sobrescrever com o do repositorio);
 - registra os hooks do `guarda.py` em `~/.claude/settings.json` de forma idempotente (use `python instalar.py --sem-guarda` para remover);
-- copia a skill `maestro` e gera as skills `/claudevalidateopus` e `/claudevalidatefable` (a partir de `validar-skill.md`) para cada CLI encontrado:
+- copia a skill `maestro` e gera as skills `/claudevalidateopus` e `/claudevalidateopusmax` (a partir de `validar-skill.md`, removendo a skill de validacao antiga se existir) para cada CLI encontrado:
 
 | Pasta | Quem le |
 |---|---|
@@ -188,12 +188,12 @@ Abaixo, `maestro` = `python ~/.maestro/maestro.py`.
 **1. Veja onde voce esta (nao gasta nada):**
 
 ```
-$ maestro rota --eu cc-haiku
-voce: nivel 2
-  descer/igual  run --tipo implementar  omni-free-code[2] > agy-flash-high[2] > agy-hydrogen-medium[2] > cc-haiku[2]
-  descer/igual  run --tipo ler          omni-free-fast[1] > omni-free-code[2] > agy-flash-low[1] > cc-haiku[2]
+$ maestro rota --eu cc-sonnet
+voce: nivel 3
+  descer/igual  run --tipo implementar  agy-hydrogen-high[3] > cc-haiku[2] > omni-free-code[2]
+  descer/igual  run --tipo ler          ollama-gemma4[1] > ollama-gpt-oss[2] > omni-free-fast[1] > agy-hydrogen-low[2] > cc-haiku[2]
   ...
-  subir         consultar              omni-credit-strong[3] > agy-hydrogen-high[3] > agy-hydrogen-xhigh[3] > agy-argon-high[3] > agy-sonnet[3] > cc-sonnet[3] > agy-opus[4] > cc-opus[4]
+  subir         consultar              agy-neon-xhigh[4] > agy-carbon-high[4] > agy-opus[4] > cc-opus[4]
 ```
 
 Executores com cota esgotada aparecem com `(X)`.
@@ -277,7 +277,7 @@ Comando(s) e resultado esperado.
 ```
 
 - **`--verificar` substitui o "aprovado" do executor.** Modelos baratos as vezes dizem que testaram sem testar; o exit code nao mente.
-- **Loop de verificacao sem custo para quem orquestra.** Se o `--verificar` falha, o proprio maestro devolve a saida enxuta ao executor, com a instrucao de nao apagar nem enfraquecer testes, e roda de novo. Para quando passa, quando a falha se repete igual (sem progresso; tempos, enderecos e numeros de linha nao contam como diferenca), quando o job chega a 3 rodadas, quando acabam as `--tentativas` (padrao 2) ou quando o executor estoura o `--orcamento` de tokens. Quem orquestra le so o resumo final: `correcao automatica: r1 omni-free-code FALHOU -> r2 agy-flash-high OK`. Cada rodada entra no historico (o `sugerir` continua contando o acerto na 1a rodada) e as automaticas com custo zero para o orquestrador.
+- **Loop de verificacao sem custo para quem orquestra.** Se o `--verificar` falha, o proprio maestro devolve a saida enxuta ao executor, com a instrucao de nao apagar nem enfraquecer testes, e roda de novo. Para quando passa, quando a falha se repete igual (sem progresso; tempos, enderecos e numeros de linha nao contam como diferenca), quando o job chega a 3 rodadas, quando acabam as `--tentativas` (padrao 2) ou quando o executor estoura o `--orcamento` de tokens. Quem orquestra le so o resumo final: `correcao automatica: r1 omni-free-code FALHOU -> r2 agy-hydrogen-high OK`. Cada rodada entra no historico (o `sugerir` continua contando o acerto na 1a rodada) e as automaticas com custo zero para o orquestrador.
 - **`--continuar` reaproveita a sessao** do executor (`--resume` no Claude, `--conversation` no agy, `--session` no opencode): ele nao rele o projeto do zero. Testado nos tres CLIs.
 - **Gratis que falhou cede a correcao.** Com `--exec auto`, se a rodada anterior de um executor gratis (local/omniroute) deu `ERRO`, `TIMEOUT` ou verificacao reprovada, o `--continuar` manda a correcao para o proximo da rota, junto com a tarefa original (ele nao tem a sessao de quem comecou) e o trabalho parcial no worktree. Executor pago que falhou segue na mesma sessao.
 - **Fallback de cota:** se o executor responde com erro de cota (429, `quota`, `rate limit`, `insufficient credit`...), o maestro marca ele como esgotado por `--horas-cota` horas (padrao 5) e tenta o proximo da lista, sozinho.
@@ -330,17 +330,17 @@ Os modelos locais sao o **1o bolso** na ordem de gasto (`local > omniroute > goo
 
 ---
 
-## Validar: revisao de senior com Opus ou Fable
+## Validar: revisao de senior com Opus (medio ou maximo)
 
-Trabalhou com um modelo menor (agy com Argon ou Flash, Claude com Haiku, um modelo local...) e quer saber se esta mesmo certo? Digite **`/claudevalidateopus`** ou **`/claudevalidatefable`** na sessao, com um foco opcional depois do comando (`/claudevalidateopus confira a migracao do banco`).
+Trabalhou com um modelo menor (agy com Hydrogen ou Neon, Claude com Haiku, um modelo local...) e quer saber se esta mesmo certo? Digite **`/claudevalidateopus`** ou **`/claudevalidateopusmax`** na sessao, com um foco opcional depois do comando (`/claudevalidateopus confira a migracao do banco`).
 
 A skill faz o modelo da sessao, seja qual for, juntar o que voce pediu (com as suas palavras) e rodar:
 
 ```
-maestro validar --modelo opus|fable --dir PROJ --tarefa pedido.md [--base REF | --job JOB] [--verificar "cmd"]
+maestro validar --modelo opus|opusmax --dir PROJ --tarefa pedido.md [--base REF | --job JOB] [--verificar "cmd"]
 ```
 
-O maestro grava o diff completo em `~/.maestro/validacoes/<id>/` e chama o **Claude Opus 5.5** ou o **Claude Fable 5.2** com **esforco medio**, so leitura, no papel de um engenheiro senior com 50 anos de experiencia. Ele confere, nesta ordem: os itens da validacao anterior (se houver), se o pedido foi atendido por inteiro (e o que foi feito sem pedido), se todo estado que o trabalho abre fecha em todos os caminhos (erro, timeout, cancelamento, troca de modo), quem chama o que mudou, se os testes cobrem os caminhos de falha (ele roda os testes), e seguranca, segredos e sobras.
+O maestro grava o diff completo em `~/.maestro/validacoes/<id>/` e chama o **Claude Opus 5.5** com **esforco medio** (`opus`) ou **esforco maximo** (`opusmax`), so leitura, no papel de um engenheiro senior com 50 anos de experiencia. Ele confere, nesta ordem: os itens da validacao anterior (se houver), se o pedido foi atendido por inteiro (e o que foi feito sem pedido), se todo estado que o trabalho abre fecha em todos os caminhos (erro, timeout, cancelamento, troca de modo), quem chama o que mudou, se os testes cobrem os caminhos de falha (ele roda os testes), e seguranca, segredos e sobras.
 
 **Regua fixa**, para o veredito nao depender do humor do revisor nem subir a cada rodada:
 
@@ -374,20 +374,20 @@ CONFERIDO: pytest -q -> 41 passed, 1 failed (test_paginacao); li api/lista.py e 
 | Opcao | Padrao | O que faz |
 |---|---|---|
 | `texto` ou `--tarefa ARQ` | obrigatorio | o que o usuario pediu; sem isso o revisor nao tem contra o que julgar |
-| `--modelo opus\|fable` | `opus` | `claude-opus-5-5` ou `claude-fable-5-2`, com o esforco de `--esforco` |
+| `--modelo opus\|opusmax` | `opus` | `claude-opus-5-5`, com esforco medio (`opus`) ou maximo (`opusmax`) |
 | `--base REF` | `HEAD` | revisa as mudancas desde essa ref, mais arquivos novos. Padrao: o que nao foi commitado. Trabalho ja commitado: `--base HEAD~2`, `--base main` |
 | `--job JOB` | | revisa o worktree de um job do maestro antes de juntar (a especificacao entregue ao executor vai junto) |
 | `--verificar "cmd"` | | roda antes e manda o resultado ao revisor |
 | `--anterior auto\|nenhuma` | `auto` | `auto` manda junto a ultima validacao do projeto nas ultimas 12 h; `nenhuma` quando e outro trabalho |
-| `--esforco medium\|high\|xhigh` | `medium` | `high` para diff grande ou mudanca critica (dados, dinheiro, seguranca); gasta mais |
+| `--esforco medium\|high\|xhigh\|max` | vazio (do `--modelo`) | usa `medium` para `opus` e `max` para `opusmax`; se passado, sobrepoe (`high` para diff grande ou mudanca critica; gasta mais) |
 | `--max-texto N` | `12000` | resposta maior que isso volta com o meio cortado (a completa fica gravada) |
 | `--timeout S` | `1500` | |
 
 Saida: **0** aprovado (com ou sem ressalvas), **3** reprovado, **1** erro ou resposta sem `VEREDITO`, **2** timeout. Toda validacao entra no historico (`ganho` mostra o gasto).
 
-- Os dois revisores ficam **fora do catalogo** de proposito: o `consultar` e as rotas nunca gastam Opus ou Fable sozinhos.
+- Os dois revisores ficam **fora do catalogo** de proposito: o `consultar` e as rotas nunca gastam `opus` ou `opusmax` sozinhos.
 - As skills tem `disable-model-invocation`: so voce dispara, porque cada validacao gasta um modelo de topo.
-- O Fable 5.2 exige creditos de uso na conta. Sem eles, o maestro trata como cota esgotada e sugere `--modelo opus`.
+- Os dois gastam a mesma cota do Claude: se um esta sem cota, o outro tambem; a mensagem de erro diz para tentar mais tarde.
 
 ---
 
@@ -399,7 +399,7 @@ Saida: **0** aprovado (com ou sem ressalvas), **3** reprovado, **1** erro ou res
 | `maestro rota --eu N [--tipo T] [--sensivel]` | quem esta abaixo/igual e acima de voce, ja na ordem que o `run` vai usar (avisa quem desceu por taxa de acerto). Nao gasta nada |
 | `maestro run ...` | delegar (ver abaixo) |
 | `maestro consultar --eu N "duvida"` | subir uma decisao para o modelo mais barato acima de voce |
-| `maestro validar --modelo opus\|fable "pedido"` | revisao de senior do trabalho feito (ver [Validar](#validar-revisao-de-senior-com-opus-ou-fable)) |
+| `maestro validar --modelo opus\|opusmax "pedido"` | revisao de senior do trabalho feito (ver [Validar](#validar-revisao-de-senior-com-opus-medio-ou-maximo)) |
 | `maestro licoes [--dir PROJ]` | licoes que as validacoes guardaram para o projeto (entram sozinhas nas tarefas novas) |
 | `maestro diff JOB [--stat] [--arquivo CAMINHO] [--max 400]` | o que o executor mudou |
 | `maestro juntar JOB` | aplica no projeto real (sem commit) e apaga o worktree |
@@ -435,7 +435,7 @@ Saida: **0** aprovado (com ou sem ressalvas), **3** reprovado, **1** erro ou res
 | `--pular-local` | | modelo local sem memoria livre: pula para o proximo da rota sem perguntar |
 | `--sem-janela` | | modelo local sem memoria livre: em vez da janela, para com saida 5 para o orquestrador perguntar |
 
-A rota `dificil` (`omni-credit-strong > agy-hydrogen-high > agy-neon-high > agy-argon-high > agy-opus > cc-sonnet`) e a unica que ignora o teto do `--eu`: e o caminho explicito para **executar** acima do seu nivel.
+A rota `dificil` (`omni-credit-strong > agy-hydrogen-xhigh > agy-neon-high > agy-carbon-high > agy-opus > cc-sonnet`) e a unica que ignora o teto do `--eu`: e o caminho explicito para **executar** acima do seu nivel.
 
 ### `consultar`
 
@@ -471,20 +471,24 @@ O consultor roda em modo so leitura e responde em ate 25 linhas: **DECISAO, MOTI
 bolsos = ["local", "omniroute", "google", "anthropic"]   # ordem de gasto
 
 [rotas]   # na rota automatica, quem tem taxa de acerto baixa no tipo desce para o fim (ver "Rota por taxa de acerto")
-implementar = ["ollama-qwen-code", "ollama-gpt-oss", "omni-free-code", "agy-flash-high", "agy-hydrogen-medium", "cc-haiku"]
-ler         = ["ollama-gemma4", "omni-free-fast", "ollama-qwen-code", "omni-free-code", "agy-flash-low", "cc-haiku"]
-dificil     = ["omni-credit-strong", "agy-hydrogen-high", "agy-neon-high", "agy-argon-high", "agy-opus", "cc-sonnet"]
-# ... pequena, testes, refatorar, docs, pesquisar
+implementar = ["agy-hydrogen-high", "omni-free-code", "cc-haiku"]
+pequena     = ["ollama-gpt-oss", "omni-free-fast", "agy-hydrogen-medium", "ollama-gemma4", "cc-haiku"]
+testes      = ["agy-hydrogen-high", "omni-free-code", "cc-haiku"]
+refatorar   = ["agy-hydrogen-high", "omni-free-code", "cc-haiku"]
+docs        = ["ollama-gpt-oss", "ollama-gemma4", "omni-free-fast", "agy-hydrogen-low", "cc-haiku"]
+ler         = ["ollama-gemma4", "ollama-gpt-oss", "omni-free-fast", "agy-hydrogen-low", "cc-haiku"]
+pesquisar   = ["agy-hydrogen-medium", "omni-free-code", "cc-haiku"]
+dificil     = ["omni-credit-strong", "agy-hydrogen-xhigh", "agy-neon-high", "agy-carbon-high", "agy-opus", "cc-sonnet"]
 
-[agy-flash-high]
+[agy-hydrogen-high]
 cli = "agy"                          # claude | agy | opencode
-modelo = "gemini-3.8-flash-high"     # passado ao CLI
+modelo = "gemini-4-hydrogen-high"    # passado ao CLI
 cota = "google"                      # de qual bolso gasta
-custo = "barato"                     # barato | medio | caro (relativo, dentro do bolso)
-nivel = 2                            # 1 a 4 (sem isso: barato=2, medio/caro=3)
+custo = "medio"                      # barato | medio | caro (relativo, dentro do bolso)
+nivel = 3                            # 1 a 4 (sem isso: barato=2, medio/caro=3)
 privado = true                       # false = provedor externo pode registrar; pulado com --sensivel
-forte = "implementacao com especificacao fechada, codigo bracal, testes"
-fraco = "diz 'aprovado' mesmo com verificacao falhando"
+forte = "implementacao com especificacao fechada, testes, refatoracao"
+fraco = "precisa de arquivos e funcoes nomeados; confira o diff, nao o APROVADO que ele escreve"
 # poupar = true                      # so com motivo; o orquestrador avisa o usuario quando usa
 ```
 
@@ -499,23 +503,21 @@ Executores que vem no catalogo:
 | `omni-free-code` | opencode | 2 | omniroute | externo |
 | `omni-free-safe` | opencode | 2 | omniroute | externo |
 | `omni-credit-strong` | opencode | 3 | omniroute | externo, poupar |
-| `agy-flash-low` | agy | 1 | google | |
-| `agy-flash-medium` | agy | 2 | google | |
-| `agy-flash-high` | agy | 2 | google | |
-| `agy-gpt-oss` | agy | 2 | google | |
 | `agy-hydrogen-low` | agy | 2 | google | |
 | `agy-hydrogen-medium` | agy | 2 | google | |
 | `agy-hydrogen-high` | agy | 3 | google | |
 | `agy-neon-medium` | agy | 3 | google | |
 | `agy-neon-high` | agy | 3 | google | |
-| `agy-hydrogen-xhigh` | agy | 3 | google | poupar |
-| `agy-argon-high` | agy | 3 | google | poupar |
+| `agy-hydrogen-xhigh` | agy | 3 | google | |
 | `agy-sonnet` | agy | 3 | google | poupar |
 | `agy-neon-xhigh` | agy | 4 | google | poupar |
+| `agy-carbon-high` | agy | 4 | google | poupar |
 | `agy-opus` | agy | 4 | google | poupar |
 | `cc-haiku` | claude | 2 | anthropic | |
 | `cc-sonnet` | claude | 3 | anthropic | poupar |
 | `cc-opus` | claude | 4 | anthropic | poupar |
+
+> **Mudanca no agy (2026-11-30):** o agy remove Gemini 3.8 Flash, Gemini 4 Argon e GPT-OSS-120b ([modelos do agy](https://antigravity.google/docs/models)). O Gemini 4 Hydrogen substitui o Flash por esforco (`agy-hydrogen-low`/`medium`/`high`), o `agy-hydrogen-xhigh` ocupa o lugar do Argon na rota `dificil`, e o agy tambem aceita `--effort` (`low|medium|high|xhigh|max`) mantendo os ids com sufixo validos.
 
 Para adicionar um executor, crie um bloco novo com `cli` em `claude`, `ollama`, `agy` ou `opencode`. Outros CLIs exigem um adaptador novo em `montar()` e `interpretar()` no `maestro.py`.
 
@@ -556,7 +558,7 @@ ECONOMIA (ultimos 30 dias)
 
 por executor. 'voltou' = o que entrou no contexto de quem orquestra, estimado como caracteres/4.
 executor           bolso      chamadas   tokens in tokens out   voltou
-agy-flash-high     google            4     1416551     251945      612
+agy-hydrogen-high  google            4     1416551     251945      612
 omni-free-code     omniroute         5       91962       6583      880
 consultas acima: 1, 24053 tokens
 onde se perdeu:
@@ -643,7 +645,7 @@ O maestro e um comando de terminal; qualquer agente que roda shell pode usa-lo. 
 | CLI | Como acha a skill | Testado como executor |
 |---|---|---|
 | Claude Code | `~/.claude/skills/maestro` | sim (`cc-haiku`): tarefa, verificacao, `--continuar` |
-| agy (Antigravity) | `~/.gemini/antigravity-cli/skills/maestro` | sim (`agy-flash-medium`): tarefa, verificacao, `--continuar` |
+| agy (Antigravity) | `~/.gemini/antigravity-cli/skills/maestro` | sim (`agy-hydrogen-medium`): tarefa, verificacao, `--continuar` |
 | opencode | `~/.claude/skills` (compativel) | sim (`omni-free-code`): tarefa, verificacao, `--continuar`, as duas vias da escalada |
 | Gemini CLI | `~/.agents/skills/maestro` (`gemini skills list` mostra) | nao ha adaptador (ver limitacoes) |
 | Codex e outros | `~/.agents/skills/maestro` | nao ha adaptador |
@@ -659,7 +661,7 @@ repositorio
 ├── maestro.py        a ferramenta
 ├── catalogo.toml     executores, rotas e bolsos
 ├── SKILL.md          a skill (diretrizes do orquestrador)
-├── validar-skill.md  modelo das skills /claudevalidateopus e /claudevalidatefable
+├── validar-skill.md  modelo das skills /claudevalidateopus e /claudevalidateopusmax
 ├── guarda.py         hooks que cobram a decisao de delegar
 ├── instalar.py       instalador (codigo, skills e hooks do guarda)
 └── testes/           test_regressao.py (unittest) e smoke.py (esta maquina)
@@ -672,7 +674,7 @@ repositorio
 ├── reabrir.json                apps fechados para modelo local e pendentes de reabertura
 ├── historico.jsonl             um evento por linha: run, leitura, consulta, validacao, cota, juntar, descartar, janela_local, reabrir
 ├── jobs/<job>/                 job.json, tarefa-rN.md, log-rN-<exec>.txt, verif-rN.txt, final.patch
-├── validacoes/<id>/            pedido.md, diff.patch e resposta.md das revisoes com Opus/Fable
+├── validacoes/<id>/            pedido.md, diff.patch e resposta.md das revisoes com Opus (opus/opusmax)
 ├── wt/<job>/                   worktrees abertos
 ├── wt/_leitura/                pasta de trabalho das leituras e consultas do agy
 ├── wt/.ai-memory.toml          marcador: sessoes de executor fora do perfil e sem handoff

@@ -321,13 +321,21 @@ class TestInstalar(unittest.TestCase):
 
     def test_52_skills_validar_instaladas(self):
         self.rodar_instalar()
-        for mod, nome_esperado in (("opus", "claudevalidateopus"), ("fable", "claudevalidatefable")):
+        antiga = os.path.join(self.claude_dir, "skills", "claudevalidatefable")
+        os.makedirs(antiga, exist_ok=True)
+        with open(os.path.join(antiga, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write("name: claudevalidatefable\n")
+        self.rodar_instalar()
+        self.assertFalse(os.path.exists(antiga), "skill do Fable devia ter sido removida pelo instalar")
+        for mod, nome_esperado in (("opus", "claudevalidateopus"), ("opusmax", "claudevalidateopusmax")):
             caminho_skill = os.path.join(self.claude_dir, "skills", nome_esperado, "SKILL.md")
             self.assertTrue(os.path.exists(caminho_skill), f"Skill {nome_esperado} nao existe em {caminho_skill}")
             with open(caminho_skill, encoding="utf-8") as f:
                 conteudo = f.read()
             self.assertIn(f"name: {nome_esperado}", conteudo)
             self.assertNotIn("{modelo}", conteudo)
+            self.assertNotIn("{esforco}", conteudo)
+            self.assertIn("esforco maximo" if mod == "opusmax" else "esforco medio", conteudo)
 
 
 class TestExecutorSemMemoria(unittest.TestCase):
@@ -964,14 +972,21 @@ class TestValidar(unittest.TestCase):
         codigo, chamadas, _, _ = self.rodar_validar("pedido curto")
         self.assertEqual(len(chamadas), 0)
 
-    def test_50_validar_modelo_fable(self):
+    def test_50_validar_modelo_opusmax(self):
         pedido = "pedido do usuario com mais de vinte caracteres para validacao"
-        codigo, chamadas, _, _ = self.rodar_validar(pedido, resposta_texto="VEREDITO: APROVADO", extras=["--modelo", "fable"])
+        codigo, chamadas, _, _ = self.rodar_validar(pedido, resposta_texto="VEREDITO: APROVADO", extras=["--modelo", "opusmax"])
         self.assertEqual(len(chamadas), 1)
         execs, cat, _, _, _, _ = chamadas[0]
-        self.assertEqual(execs, ["validar-fable"])
-        self.assertEqual(cat["validar-fable"]["modelo"], "claude-fable-5-2")
-        self.assertEqual(cat["validar-fable"]["esforco"], "medium")
+        self.assertEqual(execs, ["validar-opusmax"])
+        self.assertEqual(cat["validar-opusmax"]["modelo"], "claude-opus-5-5")
+        self.assertEqual(cat["validar-opusmax"]["esforco"], "max")
+
+    def test_50b_validar_esforco_padrao_e_sobreposto(self):
+        pedido = "pedido do usuario com mais de vinte caracteres para validacao"
+        _, chamadas, _, _ = self.rodar_validar(pedido, resposta_texto="VEREDITO: APROVADO")
+        self.assertEqual(chamadas[0][1]["validar-opus"]["esforco"], "medium")
+        _, chamadas, _, _ = self.rodar_validar(pedido, resposta_texto="VEREDITO: APROVADO", extras=["--esforco", "high"])
+        self.assertEqual(chamadas[0][1]["validar-opus"]["esforco"], "high")
 
     def test_51_montar_validador_opus(self):
         modulo = self.importar_maestro()

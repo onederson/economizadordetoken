@@ -4,8 +4,8 @@ e devolve so um resumo curto. O orquestrador especifica, revisa e decide se junt
 
 Uso:
   maestro.py catalogo                         executores, bolso de cota, estado
-  maestro.py run --exec agy-flash-high --dir PROJ --tarefa t.md [--verificar "cmd"] [--tipo implementar]
-  maestro.py run --exec agy-flash-high,omni-free-code ...   (cai para o proximo se a cota acabar)
+  maestro.py run --exec agy-hydrogen-high --dir PROJ --tarefa t.md [--verificar "cmd"] [--tipo implementar]
+  maestro.py run --exec agy-hydrogen-high,omni-free-code ...   (cai para o proximo se a cota acabar)
   maestro.py run --continuar JOB "correcao objetiva"         (mesma sessao e worktree, rodada +1)
   maestro.py run --leitura --exec cc-haiku --dir PROJ "onde X e usado?"   (coleta, sem worktree)
   maestro.py diff JOB [--stat]                 o que o executor mudou
@@ -15,7 +15,7 @@ Uso:
   maestro.py cota ID --horas 120 | --liberar   marca ou libera cota esgotada
   maestro.py sugerir [tipo]                    taxa de acerto por executor (historico)
   maestro.py ganho [--dias 30] [--comparar]    quanto os executores processaram, quanto voltou, onde se perdeu
-  maestro.py validar --modelo opus|fable "o que foi pedido" [--base REF | --job JOB]   revisao de senior; so leitura
+  maestro.py validar --modelo opus|opusmax "o que foi pedido" [--base REF | --job JOB]   revisao de senior; so leitura
 
 Niveis (qualquer modelo pode orquestrar; --eu e o seu id no catalogo ou o seu nivel de 1 a 4):
   maestro.py rota --eu cc-haiku [--tipo implementar]         quem fica abaixo/igual e quem fica acima de voce
@@ -126,8 +126,9 @@ VALIDA = (
 VALIDADORES = {
     "opus": {"cli": "claude", "modelo": "claude-opus-5-5", "esforco": "medium", "cota": "anthropic", "custo": "caro",
              "nivel": 4, "privado": True},
-    "fable": {"cli": "claude", "modelo": "claude-fable-5-2", "esforco": "medium", "cota": "anthropic", "custo": "caro",
-              "nivel": 4, "privado": True},
+    # 2026-11: o Fable 5.2 saiu do plano Pro; no lugar dele, o mesmo Opus com raciocinio maximo
+    "opusmax": {"cli": "claude", "modelo": "claude-opus-5-5", "esforco": "max", "cota": "anthropic", "custo": "caro",
+                "nivel": 4, "privado": True},
 }
 VEREDITO_RE = re.compile(r"VEREDITO:\W*(APROVADO COM RESSALVAS|APROVADO|REPROVADO)", re.I)
 
@@ -1910,7 +1911,7 @@ def cmd_licoes(a):
 
 
 def cmd_validar(a):
-    """Um modelo de topo (Opus ou Fable, esforco medio) revisa o trabalho feito por qualquer modelo e da o
+    """Um modelo de topo (Opus com esforco medio, ou opusmax com esforco maximo) revisa o trabalho feito por qualquer modelo e da o
     veredito. Fonte do trabalho: um job do maestro (--job) ou as mudancas do projeto desde --base (padrao HEAD,
     ou seja, o que ainda nao foi commitado, mais arquivos novos)."""
     pedido = open(a.tarefa, encoding="utf-8").read() if a.tarefa else a.texto
@@ -1988,15 +1989,15 @@ def cmd_validar(a):
     texto = "\n\n".join(partes) + "\n"
     with open(os.path.join(pasta_v, "pedido.md"), "w", encoding="utf-8") as f:
         f.write(texto)
-    val = {**VALIDADORES[a.modelo], "esforco": a.esforco}
+    val = {**VALIDADORES[a.modelo], **({"esforco": a.esforco} if a.esforco else {})}
     eid = f"validar-{a.modelo}"
-    if n_diff > 4000 and a.esforco == "medium" and not (inter and inter.strip()):
+    if n_diff > 4000 and val["esforco"] == "medium" and not (inter and inter.strip()):
         print(f"AVISO: diff de {n_diff} linhas; em esforco medio o revisor le por amostragem e cada rodada pode "
               "achar coisa nova. Para uma revisao completa: --esforco high, ou valide por partes (--base)")
     print(f"validando com {val['modelo']} (esforco {val['esforco']}) em {pasta} ...", flush=True)
     r = perguntar([eid], {eid: val}, VALIDA, texto, pasta, a)
     if not r:
-        sys.exit(f"{eid} indisponivel (cota esgotada?). Tente o outro: --modelo {'fable' if a.modelo == 'opus' else 'opus'}")
+        sys.exit(f"{eid} indisponivel (cota do Claude esgotada?). opus e opusmax gastam a mesma cota: tente mais tarde")
     _, texto_r, tin, tout, erro, seg = r
     m = VEREDITO_RE.search(texto_r or "")
     veredito = dito = m.group(1).upper() if m else None
@@ -2007,7 +2008,7 @@ def cmd_validar(a):
         f.write(texto_r or "")
     novas = gravar_licoes(repo, extrair_licoes(texto_r)) if veredito else 0
     registrar({"evento": "validacao", "exec": eid, "status": "ERRO" if erro else "ok", "veredito": veredito,
-               "veredito_dito": dito, "esforco": a.esforco, "revalidacao": bool(ant),
+               "veredito_dito": dito, "esforco": val["esforco"], "revalidacao": bool(ant),
                "segundos": seg, "tokens_in": tin, "tokens_out": tout, "pedido_c": len(texto),
                "resposta_c": len(texto_r or ""), "job": a.job, "repo": os.path.basename(pasta)})
     print(f"validacao | {val['modelo']} | {'TIMEOUT' if erro == 'TIMEOUT' else 'ERRO' if erro else 'ok'} "
@@ -2380,7 +2381,7 @@ def main():
     k.add_argument("--timeout", type=int, default=900)
     k.add_argument("--horas-cota", type=float, default=5)
     k.add_argument("--max-texto", type=int, default=4000)
-    v = sub.add_parser("validar", help="Opus ou Fable (esforco medio) revisa o trabalho e da o veredito; so leitura")
+    v = sub.add_parser("validar", help="Opus (esforco medio) ou opusmax (esforco maximo) revisa o trabalho e da o veredito; so leitura")
     v.add_argument("texto", nargs="?", help="o que o usuario pediu, com as palavras dele")
     v.add_argument("--tarefa", help="arquivo .md com o pedido (em vez do texto)")
     v.add_argument("--modelo", choices=sorted(VALIDADORES), default="opus")
@@ -2390,8 +2391,8 @@ def main():
     v.add_argument("--verificar", help="comando rodado antes; o resultado vai junto para o revisor")
     v.add_argument("--anterior", choices=["auto", "nenhuma"], default="auto",
                    help="auto: manda junto a ultima validacao deste projeto nas ultimas 12 h (revalidacao)")
-    v.add_argument("--esforco", choices=["medium", "high", "xhigh"], default="medium",
-                   help="esforco do revisor; high para diff grande ou mudanca critica (gasta mais)")
+    v.add_argument("--esforco", choices=["medium", "high", "xhigh", "max"], default=None,
+                   help="sobrepoe o esforco do --modelo (opus=medium, opusmax=max); high para diff grande (gasta mais)")
     v.add_argument("--timeout", type=int, default=1500)
     v.add_argument("--horas-cota", type=float, default=5)
     v.add_argument("--max-texto", type=int, default=12000, help="resposta maior que isso e cortada no meio")

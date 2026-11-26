@@ -1,12 +1,12 @@
 ---
 name: claudevalidate{modelo}
-description: Revisao de senior pelo Claude {Nome} (esforco medio, so leitura) do trabalho feito nesta sessao, por qualquer modelo (agy, Haiku, Argon...). Devolve VEREDITO APROVADO / APROVADO COM RESSALVAS / REPROVADO com os problemas em caminho:linha, a origem de cada um (especificacao ou executor) e licoes para as proximas especificacoes. Use so quando o usuario pedir /claudevalidate{modelo}.
+description: Revisao de senior pelo Claude {Nome} ({esforco}, so leitura) do trabalho feito nesta sessao, por qualquer modelo (agy, Haiku, Hydrogen...). Devolve VEREDITO APROVADO / APROVADO COM RESSALVAS / REPROVADO com os problemas em caminho:linha, a origem de cada um (especificacao ou executor) e licoes para as proximas especificacoes. Use so quando o usuario pedir /claudevalidate{modelo}.
 disable-model-invocation: true
 ---
 
 # Validar com o {Nome}
 
-Um revisor de topo ({Nome}, esforco medio, so leitura) confere se o trabalho desta sessao pode ser entregue, como um engenheiro senior com 50 anos de experiencia. Voce nao julga o proprio trabalho: prepara o pedido, roda o comando e repassa o veredito.
+Um revisor de topo ({Nome}, {esforco}, so leitura) confere se o trabalho desta sessao pode ser entregue, como um engenheiro senior com 50 anos de experiencia. Voce nao julga o proprio trabalho: prepara o pedido, roda o comando e repassa o veredito.
 
 O revisor segue uma regua fixa: so reprova por problema com cenario concreto, aponta a classe inteira do defeito (todas as ocorrencias, a invariante e o teste que a prova) e diz se a culpa foi da especificacao ou do executor. Problema antigo, teste so possivel ao vivo e estilo ficam fora do veredito. APROVADO e o resultado normal de trabalho correto.
 
@@ -24,7 +24,7 @@ O revisor segue uma regua fixa: so reprova por problema com cenario concreto, ap
    `python ~/.maestro/maestro.py validar --modelo {modelo} --dir <projeto> --tarefa <arquivo> [--base REF | --job JOB] [--verificar "<comando de teste do projeto>"]`
    Se o shell nao expande `~`: `%USERPROFILE%\.maestro\maestro.py` (Windows) ou o caminho completo.
    Revalidacao: a validacao anterior do mesmo projeto (ate 12 h) vai junto sozinha, com o diff do que mudou desde ela, e o revisor confere primeiro se cada item dela foi corrigido. Se for outro trabalho no mesmo projeto, passe `--anterior nenhuma`.
-   Diff grande (o maestro avisa acima de 4000 linhas) ou mudanca critica (dados, dinheiro, seguranca, algo que nao tem volta): acrescente `--esforco high`; em esforco medio o revisor le por amostragem.
+   Diff grande (o maestro avisa acima de 4000 linhas) ou mudanca critica (dados, dinheiro, seguranca, algo que nao tem volta): acrescente `--esforco high` (no /claudevalidateopus) ou use o /claudevalidateopusmax; em esforco medio o revisor le por amostragem.
 4. Mostre ao usuario o VEREDITO, o RESUMO, o ANTERIOR (se veio) e os PROBLEMAS como vieram, sem suavizar nem contestar. FORA DO VEREDITO em uma linha cada. Se aparecer `VEREDITO PELA REGUA`, ele vale sobre o que o revisor escreveu. Saida 0 = aprovado (com ou sem ressalvas), 3 = reprovado, 1 ou 2 = erro ou timeout: diga que **nao foi validado**.
 5. Se veio REPROVADO ou com ressalvas, liste o que corrigir e pergunte se deve corrigir. Ao corrigir:
    - corrija a **classe** do problema, nao so a linha citada: garanta a invariante em todos os caminhos que o revisor listou e procure outros do mesmo tipo;

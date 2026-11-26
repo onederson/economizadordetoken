@@ -18,8 +18,8 @@ Ferramenta: `python ~/.maestro/maestro.py` (abaixo, `maestro`), rodada pelo seu 
 | Nivel | Aguenta | Modelos |
 |---|---|---|
 | 4 | arquitetura, causa raiz, seguranca, concorrencia, decisao sem volta | Fable, Opus, Gemini 4 Carbon, Gemini 4 Neon xhigh, GPT de topo |
-| 3 | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Argon, Gemini 4 Neon medium/high, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
-| 2 | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash high/medium, Gemini 4 Hydrogen medium/low, ollama-gpt-oss (so pequena/docs), free-code, modelos "mini" |
+| 3 | implementacao delicada, depuracao com muito contexto, revisar diff | Sonnet, Gemini 4 Neon medium/high, Gemini 4 Hydrogen high/xhigh, Gemini Pro, Kimi/GLM/DeepSeek grandes |
+| 2 | implementar com especificacao fechada, testes, docs | Haiku, Gemini Flash, Gemini 4 Hydrogen medium/low, ollama-gpt-oss (so pequena/docs), free-code, modelos "mini" |
 | 1 | ler, coletar, extrair fatos, edicao mecanica | Flash low/lite, ollama-gemma4, free-fast, modelos "nano" |
 
 Passe o seu nivel em `--eu` (o numero, ou o seu id do catalogo, ex.: `--eu cc-haiku`). Se o seu modelo nao esta na tabela, compare pelo nome (pro/sonnet = 3, flash/haiku/mini = 2) e, na duvida, use 2. Antes da primeira chamada da sessao rode `maestro rota --eu <voce>`: mostra, sem gastar nada, quem esta abaixo ou igual a voce, quem esta acima e o que esta esgotado.
@@ -77,7 +77,7 @@ A pergunta precisa se bastar, porque o modelo maior nao viu a sua conversa: o qu
 
 ## 3. Descer: escolher o executor
 
-**Prioridade do usuario: qualidade na entrega > agilidade > custo.** A ordem de gasto (1) Ollama local 2) OmniRoute 3) agy 4) Claude Code) vale entre executores que entregam igual. Quem perde para outro vai para depois dele. Por isso as rotas de codigo (`implementar`, `testes`, `refatorar`, `pesquisar`) comecam no agy-flash: o Ollama local perdeu ali (2 de 27 rodadas aproveitadas, 2026-11-24). O local continua em `pequena`, `docs` e `ler`.
+**Prioridade do usuario: qualidade na entrega > agilidade > custo.** A ordem de gasto (1) Ollama local 2) OmniRoute 3) agy 4) Claude Code) vale entre executores que entregam igual. Quem perde para outro vai para depois dele. Por isso as rotas de codigo (`implementar`, `testes`, `refatorar`, `pesquisar`) comecam no agy-hydrogen: o Ollama local perdeu ali (2 de 27 rodadas aproveitadas, 2026-11-24). O local continua em `pequena`, `docs` e `ler`.
 
 Use `--exec auto` (padrao) e nao monte listas com `--exec` a mao: o maestro aprende sozinho. Cada executor em cada job e uma tentativa; ganha quem entregou o que foi juntado. Quem fica mais de 15 pontos abaixo do melhor da rota, ou perde 3 seguidas, vai para o fim. Executor gratis que estoura o tempo (300 s no local), da erro ou termina sem alterar nada cede a vez na hora, e o worktree volta ao estado anterior. Servico fora do ar e pulado por 30 min sem contar derrota. Mudou o modelo ou a configuracao no catalogo: o historico antigo daquele executor deixa de contar. `maestro sugerir` mostra o placar e a ordem efetiva.
 
@@ -89,7 +89,7 @@ Use `--exec auto` (padrao) e nao monte listas com `--exec` a mao: o maestro apre
 | Implementar, testes, refatorar | `maestro run --eu <voce> --tipo implementar ...` |
 | Tarefa pequena, docs | `--tipo pequena` / `--tipo docs` |
 | Codigo com segredo ou de cliente | acrescente `--sensivel` (pula so o OmniRoute, mantendo `local`, `agy` e `claude`) |
-| Execucao que exige mais que voce | `--tipo dificil` (credit-strong > Hydrogen high > Neon high > Argon > Opus no agy > Sonnet); avise o usuario em uma linha |
+| Execucao que exige mais que voce | `--tipo dificil` (credit-strong > Hydrogen xhigh > Neon high > Carbon high > Opus no agy > Sonnet); avise o usuario em uma linha |
 
 - `--exec a,b,c` forca uma lista propria; use so com motivo (ex.: `maestro sugerir <tipo>` mostra que um executor erra muito nesse tipo).
 - Nunca coloque segredos (chaves, senhas, tokens) em nenhuma tarefa nem consulta.

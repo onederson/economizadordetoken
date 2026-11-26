@@ -23,15 +23,20 @@ for pasta in SKILLS:
     os.makedirs(pasta, exist_ok=True)
     shutil.copy2(os.path.join(AQUI, "SKILL.md"), pasta)
     print("skill  ->", pasta)
-    # /claudevalidateopus e /claudevalidatefable: revisao de senior pelo 'maestro.py validar'
+    # /claudevalidateopus (esforco medio) e /claudevalidateopusmax (esforco maximo): revisao de senior pelo
+    # 'maestro.py validar'. O Fable 5.2 saiu do plano Pro em 2026-11: a skill antiga dele e removida.
     with open(os.path.join(AQUI, "validar-skill.md"), encoding="utf-8") as f:
         modelo_skill = f.read()
-    for modelo, nome in (("opus", "Opus 5.5"), ("fable", "Fable 5.2")):
+    for modelo, nome, esforco in (("opus", "Opus 5.5", "esforco medio"), ("opusmax", "Opus 5.5", "esforco maximo")):
         destino = os.path.join(os.path.dirname(pasta), f"claudevalidate{modelo}")
         os.makedirs(destino, exist_ok=True)
         with open(os.path.join(destino, "SKILL.md"), "w", encoding="utf-8") as f:
-            f.write(modelo_skill.replace("{modelo}", modelo).replace("{Nome}", nome))
+            f.write(modelo_skill.replace("{modelo}", modelo).replace("{Nome}", nome).replace("{esforco}", esforco))
         print("skill  ->", destino)
+    antiga = os.path.join(os.path.dirname(pasta), "claudevalidatefable")
+    if os.path.isfile(os.path.join(antiga, "SKILL.md")):
+        shutil.rmtree(antiga)
+        print("skill  x", antiga, "(Fable saiu do plano)")
 
 # Guarda: hooks do Claude Code que cobram a decisao de delegar (ver guarda.py). --sem-guarda remove.
 shutil.copy2(os.path.join(AQUI, "guarda.py"), CASA)
