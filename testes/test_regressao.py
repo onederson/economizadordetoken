@@ -213,6 +213,7 @@ class TestInstalar(unittest.TestCase):
         self.env = dict(os.environ)
         self.env["HOME"] = self.temp_dir
         self.env["USERPROFILE"] = self.temp_dir
+        self.env["MAESTRO_SEM_ATUALIZAR"] = "1"  # o teste nao pode rodar git pull no repo de verdade
         for k in ("MAESTRO_EU", "MAESTRO_GUARDA", "MAESTRO_LIMITE_AVISO", "MAESTRO_LIMITE_PARADA"):
             self.env.pop(k, None)
 

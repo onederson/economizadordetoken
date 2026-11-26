@@ -158,12 +158,14 @@ cd economizadordetoken
 python instalar.py
 ```
 
+**Para atualizar, e o mesmo comando:** `python instalar.py` dentro da pasta clonada. Ele baixa a versao nova (`git pull`) e instala tudo de novo.
+
 O instalador:
 
-- copia `maestro.py`, `guarda.py` e `catalogo.toml` para `~/.maestro/`;
-- **preserva** um `catalogo.toml` ja instalado (use `python instalar.py --catalogo` para sobrescrever com o do repositorio);
+- se a pasta e um clone do git, roda `git pull` antes e instala a versao nova (`--sem-atualizar` pula esse passo);
+- copia `maestro.py`, `guarda.py` e `catalogo.toml` para `~/.maestro/`; se o `catalogo.toml` instalado era diferente, a versao antiga fica salva ao lado como `catalogo.toml.antes-AAAAMMDD-HHMMSS`;
 - registra os hooks do `guarda.py` em `~/.claude/settings.json` de forma idempotente (use `python instalar.py --sem-guarda` para remover);
-- copia a skill `maestro` e gera as skills `/claudevalidateopus` e `/claudevalidateopusmax` (a partir de `validar-skill.md`, removendo a skill de validacao antiga se existir) para cada CLI encontrado:
+- copia as skills `maestro` e `warroom` e gera as skills `/claudevalidateopus` e `/claudevalidateopusmax` (a partir de `validar-skill.md`, removendo a skill de validacao antiga se existir) para cada CLI encontrado:
 
 | Pasta | Quem le |
 |---|---|

@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Instala o maestro: codigo em ~/.maestro e a skill no Claude Code e no agy.
-Preserva catalogo.toml ja instalado (use --catalogo para sobrescrever)."""
-import json, os, shutil, sys
+"""Instala ou atualiza o maestro: codigo em ~/.maestro e as skills no Claude Code, no agy e em ~/.agents.
+
+Um comando so, para quem instala e para quem atualiza:  python instalar.py
+- Se esta pasta e um clone do git, baixa a versao nova antes (git pull) e instala ela.
+- Instala tudo de novo, inclusive o catalogo.toml; o catalogo antigo, se era diferente, fica salvo ao lado
+  como catalogo.toml.antes-AAAAMMDD-HHMMSS.
+--sem-atualizar: nao roda o git pull.  --sem-guarda: remove os hooks do guarda."""
+import json, os, shutil, subprocess, sys, time
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 CASA = os.path.expanduser("~/.maestro")
@@ -10,11 +15,34 @@ SKILLS = [os.path.expanduser("~/.claude/skills/maestro"),
           os.path.expanduser("~/.gemini/antigravity-cli/skills/maestro"),
           os.path.expanduser("~/.agents/skills/maestro")]
 
+# 1. Atualiza o clone (quem ja tem so roda este arquivo de novo). Se veio coisa nova, roda o instalador novo.
+if "--sem-atualizar" not in sys.argv and os.environ.get("MAESTRO_SEM_ATUALIZAR") != "1"         and os.path.isdir(os.path.join(AQUI, ".git")) and shutil.which("git"):
+    antes = subprocess.run(["git", "rev-parse", "HEAD"], cwd=AQUI, capture_output=True, text=True).stdout.strip()
+    r = subprocess.run(["git", "pull", "--ff-only", "-q"], cwd=AQUI, capture_output=True, text=True)
+    if r.returncode != 0:
+        print("AVISO: nao deu para baixar a versao nova (git pull):", (r.stderr or r.stdout).strip()[:300])
+        print("       instalando a versao que ja esta nesta pasta")
+    else:
+        depois = subprocess.run(["git", "rev-parse", "HEAD"], cwd=AQUI, capture_output=True, text=True).stdout.strip()
+        if depois != antes:
+            print(f"atualizado: {antes[:7]} -> {depois[:7]}")
+            sys.exit(subprocess.run([sys.executable, os.path.abspath(__file__), "--sem-atualizar",
+                                     *sys.argv[1:]]).returncode)
+        print("ja esta na versao mais nova")
+
+# 2. Codigo e catalogo: sempre a versao desta pasta. Catalogo antigo diferente fica salvo ao lado.
 os.makedirs(CASA, exist_ok=True)
 shutil.copy2(os.path.join(AQUI, "maestro.py"), CASA)
 destino_cat = os.path.join(CASA, "catalogo.toml")
-if "--catalogo" in sys.argv or not os.path.exists(destino_cat):
-    shutil.copy2(os.path.join(AQUI, "catalogo.toml"), destino_cat)
+novo_cat = os.path.join(AQUI, "catalogo.toml")
+if os.path.exists(destino_cat):
+    with open(destino_cat, "rb") as a, open(novo_cat, "rb") as b:
+        diferente = a.read() != b.read()
+    if diferente:
+        guardado = destino_cat + time.strftime(".antes-%Y%m%d-%H%M%S")
+        shutil.copy2(destino_cat, guardado)
+        print("catalogo antigo salvo em", guardado)
+shutil.copy2(novo_cat, destino_cat)
 print("codigo ->", CASA)
 for pasta in SKILLS:
     if not os.path.isdir(os.path.dirname(pasta)):
