@@ -131,6 +131,7 @@ maestro run --leitura --eu <voce> --dir <projeto> "pergunta de coleta"
 
 - O projeto precisa ser git com commit inicial (o executor trabalha num worktree em `~/.maestro/wt/`, com autonomia total, sem tocar o projeto real). Mudancas nao commitadas e arquivos nao rastreados do usuario sao copiados para o worktree.
 - Tarefas que podem passar de 1 minuto: rode em segundo plano e trabalhe em outra parte enquanto isso. Jobs paralelos sao seguros (cada um tem seu worktree), mas evite dois jobs no mesmo arquivo: a juntada do segundo pode conflitar.
+- **3 ou mais tarefas independentes na fila: use a sala de guerra (skill `warroom`, `maestro sala`)** em vez de varios `run` com `&`: ela separa as areas de arquivo, vigia, confere quem saiu da area e junta uma por vez com a verificacao no projeto real.
 - Leia so o resumo impresso. O log completo fica em `~/.maestro/jobs/<job>/`, abra apenas para investigar falha.
 
 **Quando o modelo local nao cabe na memoria**, o maestro resolve sozinho, sem gastar token seu, e o modelo local tem prioridade (decisao do usuario): uma janela avisa quais apps vao ser fechados. "Fechar" ou sem resposta em 2 min: fecha so o necessario (forcando o que nao fechar), roda o local e, quando o maestro termina, tira o modelo da memoria e reabre os apps (navegador volta com as abas). "Nao fechar": segue a rota sem o local (linha `pulando ...` no resumo). Nao faca nada com isso. Se o maestro cair antes de reabrir, `maestro reabrir` reabre o que ficou pendente (o `recursos` avisa).

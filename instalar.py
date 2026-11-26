@@ -23,6 +23,11 @@ for pasta in SKILLS:
     os.makedirs(pasta, exist_ok=True)
     shutil.copy2(os.path.join(AQUI, "SKILL.md"), pasta)
     print("skill  ->", pasta)
+    # /warroom: sala de guerra (varias frentes em paralelo pelo 'maestro.py sala')
+    sala = os.path.join(os.path.dirname(pasta), "warroom")
+    os.makedirs(sala, exist_ok=True)
+    shutil.copy2(os.path.join(AQUI, "warroom-skill.md"), os.path.join(sala, "SKILL.md"))
+    print("skill  ->", sala)
     # /claudevalidateopus (esforco medio) e /claudevalidateopusmax (esforco maximo): revisao de senior pelo
     # 'maestro.py validar'. O Fable 5.2 saiu do plano Pro em 2026-11: a skill antiga dele e removida.
     with open(os.path.join(AQUI, "validar-skill.md"), encoding="utf-8") as f:

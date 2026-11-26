@@ -25,16 +25,17 @@ Sao dois pecas:
 8. [Escalada: quando o executor trava](#escalada-quando-o-executor-trava)
 9. [Modelos locais (Ollama) e prioridade de memoria](#modelos-locais-ollama-e-prioridade-de-memoria)
 10. [Validar: revisao de senior com Opus (medio ou maximo)](#validar-revisao-de-senior-com-opus-medio-ou-maximo)
-11. [Referencia de comandos](#referencia-de-comandos)
-12. [O catalogo](#o-catalogo)
-13. [Como o maestro economiza token (sem ficar burro)](#como-o-maestro-economiza-token-sem-ficar-burro)
-14. [Guarda: garante que o maestro e considerado](#guarda-garante-que-o-maestro-e-considerado)
-15. [Seguranca](#seguranca)
-16. [Testes](#testes)
-17. [Usando de qualquer CLI](#usando-de-qualquer-cli)
-18. [Dados e arquivos](#dados-e-arquivos)
-19. [Limitacoes conhecidas](#limitacoes-conhecidas)
-20. [Inspiracoes](#inspiracoes)
+11. [Sala de guerra (/warroom): varias frentes em paralelo](#sala-de-guerra-warroom-varias-frentes-em-paralelo)
+12. [Referencia de comandos](#referencia-de-comandos)
+13. [O catalogo](#o-catalogo)
+14. [Como o maestro economiza token (sem ficar burro)](#como-o-maestro-economiza-token-sem-ficar-burro)
+15. [Guarda: garante que o maestro e considerado](#guarda-garante-que-o-maestro-e-considerado)
+16. [Seguranca](#seguranca)
+17. [Testes](#testes)
+18. [Usando de qualquer CLI](#usando-de-qualquer-cli)
+19. [Dados e arquivos](#dados-e-arquivos)
+20. [Limitacoes conhecidas](#limitacoes-conhecidas)
+21. [Inspiracoes](#inspiracoes)
 
 ---
 
@@ -391,6 +392,56 @@ Saida: **0** aprovado (com ou sem ressalvas), **3** reprovado, **1** erro ou res
 
 ---
 
+## Sala de guerra (/warroom): varias frentes em paralelo
+
+Quando ha varias atividades na fila, o orquestrador abre uma **sala de guerra**: cada atividade vira uma **frente**, todas rodam ao mesmo tempo em executores diferentes (varios agy, Haiku, Ollama...) e nenhuma atrapalha a outra. Nasceu numa sessao real de desenvolvimento de jogo, em que 4 executores trabalharam juntos e 12 frentes entraram em uma manha; o `maestro sala` automatiza o que la foi feito a mao (lancar com `&`, vigiar logs, conferir quem mexeu onde, juntar e commitar uma por uma).
+
+Como funciona:
+
+- **Plano** (`sala.toml`): uma `[[frente]]` por atividade, com o arquivo de tarefa, a **area** (globs dos arquivos que ela pode criar/alterar) e, se for o caso, `depois = [...]`. Na sala: `verificar`, `paralelo`, `juntar = "revisar" | "auto"`, `protegidos` (arquivos existentes que nenhuma frente pode alterar, como os testes) e `rodape` para os commits.
+- **Sem pisar no outro:** frentes cujas areas se cruzam, ou com `depois`, esperam a anterior ser **juntada** e partem do projeto ja com ela. O maestro anexa a cada tarefa as regras da area; ao terminar, confere o diff: arquivo fora da area ou protegido alterado = estado `invadiu`, nada e juntado.
+- **Juntada uma por vez:** aplica no projeto real, roda o `verificar` **ali** (pega o conflito de sentido entre duas frentes que passaram cada uma sozinha), faz o commit da frente e apaga o worktree. Falhou qualquer passo: desfaz, o projeto fica como estava e a frente vai para `conflito`.
+- **Vigia:** `sala rodar` lanca o que esta livre (processos soltos, que sobrevivem se o vigia fechar), olha a cada 10 s e termina no primeiro evento que precisa do orquestrador (`pronta`, `falhou`, `duvida`, `invadiu`, `conflito`), imprimindo o quadro e os proximos comandos. Rodado em background, o fim dele e o aviso.
+- **Modelo local:** so uma frente por vez usa o Ollama (GPU); as outras seguem a rota sem ele. Se o local nao couber na memoria, a frente e relancada sem ele, sem janela.
+- **Plano vivo:** acrescentar `[[frente]]` no `.toml` e rodar `sala rodar` de novo inclui a frente nova no meio da guerra.
+
+```
+maestro sala checar sala.toml        # confere o plano e mostra as ondas; nada e lancado
+maestro sala rodar sala.toml         # em background; volta no proximo evento
+maestro diff <job> --stat            # conferir a frente pronta
+maestro sala juntar <sala> <id>      # aplica, verifica no projeto real, commita (desfaz se falhar)
+maestro sala retomar <sala> <id> "correcao"   # mesmo job, nova rodada
+maestro sala refazer <sala> <id>     # descarta o job e parte de novo do projeto atual
+maestro sala status|parar|descartar ...
+```
+
+Exemplo de plano:
+
+```toml
+dir = "C:/Projetos/Jogo"
+verificar = "bash tools/verificar.sh"
+paralelo = 4
+juntar = "revisar"
+protegidos = ["testes/nucleo/**"]
+
+[[frente]]
+id = "B"
+titulo = "feat: gerador da run"
+tarefa = "tarefa_run.md"
+area = ["scripts/run/**", "testes/run/**"]
+
+[[frente]]
+id = "G"
+titulo = "feat: liga barulho e infeccao nos zumbis"
+tarefa = "tarefa_integracao.md"
+area = ["scripts/zumbis/**", "scripts/jogador/jogador.gd", "testes/integracao/**"]
+depois = ["B"]
+```
+
+A skill `/warroom` (instalada junto) ensina o orquestrador a levantar a fila, dividir em frentes que nao se cruzam, escrever o plano e tratar cada evento. Dados de cada sala em `~/.maestro/salas/<nome>/` (`sala.json`, um `.log` por frente).
+
+---
+
 ## Referencia de comandos
 
 | Comando | Para que |
@@ -405,6 +456,7 @@ Saida: **0** aprovado (com ou sem ressalvas), **3** reprovado, **1** erro ou res
 | `maestro juntar JOB` | aplica no projeto real (sem commit) e apaga o worktree |
 | `maestro descartar JOB` | apaga o worktree sem aplicar |
 | `maestro jobs` | jobs com worktree aberto |
+| `maestro sala checar\|rodar\|status\|juntar\|retomar\|refazer\|descartar\|parar ...` | sala de guerra: varias frentes em paralelo (ver [Sala de guerra](#sala-de-guerra-warroom-varias-frentes-em-paralelo)) |
 | `maestro cota ID --horas 120` / `--liberar` | marcar ou liberar cota esgotada manualmente |
 | `maestro sugerir [tipo]` | taxa de acerto por executor e tipo (verificacao OK, OK de primeira, juntado) |
 | `maestro recursos [--exec ID]` | a RAM + VRAM livres comportam o modelo ollama? Quanto falta e quais apps liberariam memoria. O `run` faz essa conta sozinho antes de usar um executor local e, se nao cabe, o modelo local tem prioridade: uma janela avisa quais apps vao ser fechados. "Fechar" ou sem resposta em 2 min: fecha so o necessario (forcando o que nao fechar), roda e, no fim, tira o modelo da memoria e reabre os apps (navegador com as abas). "Nao fechar": segue a rota sem o local. Sem janela (ou `--sem-janela`), para com saida 5 |
@@ -662,6 +714,7 @@ repositorio
 ├── catalogo.toml     executores, rotas e bolsos
 ├── SKILL.md          a skill (diretrizes do orquestrador)
 ├── validar-skill.md  modelo das skills /claudevalidateopus e /claudevalidateopusmax
+├── warroom-skill.md  a skill /warroom (sala de guerra)
 ├── guarda.py         hooks que cobram a decisao de delegar
 ├── instalar.py       instalador (codigo, skills e hooks do guarda)
 └── testes/           test_regressao.py (unittest) e smoke.py (esta maquina)
@@ -676,6 +729,8 @@ repositorio
 ├── jobs/<job>/                 job.json, tarefa-rN.md, log-rN-<exec>.txt, verif-rN.txt, final.patch
 ├── validacoes/<id>/            pedido.md, diff.patch e resposta.md das revisoes com Opus (opus/opusmax)
 ├── wt/<job>/                   worktrees abertos
+├── salas/<nome>/               sala de guerra: sala.json (frentes e eventos), <frente>.log, .tarefa.md, .res.json
+├── travas/                     travas entre processos (worktree no mesmo repo, estado.json, sala)
 ├── wt/_leitura/                pasta de trabalho das leituras e consultas do agy
 ├── wt/.ai-memory.toml          marcador: sessoes de executor fora do perfil e sem handoff
 └── respostas/                  respostas longas de leitura e consulta, na integra

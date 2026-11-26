@@ -17,6 +17,13 @@ Uso:
   maestro.py ganho [--dias 30] [--comparar]    quanto os executores processaram, quanto voltou, onde se perdeu
   maestro.py validar --modelo opus|opusmax "o que foi pedido" [--base REF | --job JOB]   revisao de senior; so leitura
 
+Sala de guerra (/warroom): varias frentes ao mesmo tempo, cada uma na sua area, juntadas uma por vez:
+  maestro.py sala checar PLANO.toml            confere o plano e mostra as ondas (nada e lancado)
+  maestro.py sala rodar PLANO.toml|NOME        lanca o que esta livre e volta no proximo evento (rode em background)
+  maestro.py sala status NOME                  quadro das frentes
+  maestro.py sala juntar NOME FRENTE           aplica, verifica no projeto real e commita (desfaz se falhar)
+  maestro.py sala retomar|refazer|descartar|parar NOME FRENTE
+
 Niveis (qualquer modelo pode orquestrar; --eu e o seu id no catalogo ou o seu nivel de 1 a 4):
   maestro.py rota --eu cc-haiku [--tipo implementar]         quem fica abaixo/igual e quem fica acima de voce
   maestro.py run --eu 2 ...                                  delega so para nivel igual ou menor que o seu
@@ -39,7 +46,7 @@ saida 5 e lista os apps; ai quem orquestra NUNCA fecha nada sem o usuario autori
   maestro.py run ... --pular-local             usuario nao autorizou: segue para o proximo executor da rota
   maestro.py reabrir                           reabre o que o maestro fechou e ainda nao reabriu
 """
-import argparse, collections, hashlib, json, os, re, secrets, shutil, subprocess, sys, time, tomllib, urllib.error, urllib.request
+import argparse, collections, contextlib, hashlib, json, os, re, secrets, shutil, subprocess, sys, time, tomllib, urllib.error, urllib.request
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 CASA = os.path.expanduser("~/.maestro")
@@ -165,10 +172,50 @@ def ler_json(caminho, padrao):
 
 def gravar_json(caminho, dados):
     os.makedirs(os.path.dirname(caminho), exist_ok=True)
-    tmp = caminho + ".tmp"
+    tmp = f"{caminho}.{os.getpid()}.tmp"  # por processo: na sala de guerra varios maestros gravam ao mesmo tempo
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(dados, f, indent=2, ensure_ascii=False)
+    for tentativa in range(20):
+        try:
+            os.replace(tmp, caminho)
+            return
+        except PermissionError:  # Windows: outro processo esta lendo o arquivo neste instante
+            time.sleep(0.1)
     os.replace(tmp, caminho)
+
+
+@contextlib.contextmanager
+def trava(nome, espera=900, velha=1800):
+    """Trava entre processos (arquivo criado com O_EXCL). Varios jobs da sala de guerra criam worktree no mesmo
+    repo e gravam o estado.json ao mesmo tempo; sem isso o git disputa o index.lock e um gravava por cima do
+    outro. Trava mais velha que `velha` segundos e de um processo que morreu: e removida."""
+    pasta = os.path.join(CASA, "travas")
+    os.makedirs(pasta, exist_ok=True)
+    caminho = os.path.join(pasta, re.sub(r"[^\w.-]", "_", nome)[-120:] + ".lock")
+    limite = time.time() + espera
+    while True:
+        try:
+            fd = os.open(caminho, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(caminho) > velha:
+                    os.remove(caminho)
+                    continue
+            except OSError:
+                continue
+            if time.time() > limite:
+                raise TimeoutError(f"trava {nome} ocupada ha mais de {espera}s ({caminho})")
+            time.sleep(0.5)
+    try:
+        yield
+    finally:
+        try:
+            os.remove(caminho)
+        except OSError:
+            pass
 
 
 def registrar(evento):
@@ -332,7 +379,10 @@ def vigencia_config():
             vig[eid], mudou = {"hash": h, "desde": agora}, True
             print(f"aprendizado: {eid} mudou de configuracao; o historico anterior dele deixa de contar")
     if mudou:
-        gravar_json(ESTADO, est)
+        with trava("estado"):  # rele: outro maestro da sala pode ter gravado o estado nesse meio tempo
+            atual = ler_json(ESTADO, {})
+            atual["config_exec"] = vig
+            gravar_json(ESTADO, atual)
     return {e: v["desde"] for e, v in vig.items()}
 
 
@@ -418,10 +468,11 @@ def esgotados():
 
 
 def marcar_esgotado(eid, horas):
-    est = ler_json(ESTADO, {})
     ate = time.strftime("%Y-%m-%dT%H:%M", time.localtime(time.time() + horas * 3600))
-    est.setdefault("esgotado", {})[eid] = ate
-    gravar_json(ESTADO, est)
+    with trava("estado"):
+        est = ler_json(ESTADO, {})
+        est.setdefault("esgotado", {})[eid] = ate
+        gravar_json(ESTADO, est)
     return ate
 
 
@@ -464,8 +515,9 @@ def criar_worktree(repo, job):
     wt = os.path.join(CASA, "wt", job)
     os.makedirs(os.path.dirname(wt), exist_ok=True)
     garantir_marcador(os.path.dirname(wt))
-    base = git(repo, "stash", "create").stdout.strip() or git(repo, "rev-parse", "HEAD", ok=True).stdout.strip()
-    git(repo, "worktree", "add", "--detach", wt, base, ok=True)
+    with trava("repo-" + marca(os.path.normcase(os.path.abspath(repo)))):  # jobs da sala de guerra em paralelo
+        base = git(repo, "stash", "create").stdout.strip() or git(repo, "rev-parse", "HEAD", ok=True).stdout.strip()
+        git(repo, "worktree", "add", "--detach", wt, base, ok=True)
     # arquivos novos do usuario (nao rastreados) tambem vao para o worktree
     soltos = [p for p in git(repo, "ls-files", "--others", "--exclude-standard", "-z").stdout.split("\0") if p]
     total = sum(os.path.getsize(os.path.join(repo, p)) for p in soltos if os.path.isfile(os.path.join(repo, p)))
@@ -1020,6 +1072,12 @@ def checar_locais(execs, cat, pular, janela=True):
     resposta em JANELA_ESPERA s: fecha, roda e reabre tudo quando o maestro terminar. 'Nao fechar': segue a rota
     sem os locais que nao cabem. Sem janela possivel (ou --sem-janela): para com saida 5 e o orquestrador
     pergunta. --pular-local: nem pergunta. Devolve a lista de executores a usar."""
+    if execs and os.environ.get("MAESTRO_SEM_LOCAL") == "1":
+        # sala de guerra: outra frente esta com a vez do modelo local; dois na GPU ao mesmo tempo travam os dois
+        sem = [e for e in execs if cat[e]["cli"] != "ollama"]
+        if sem and len(sem) < len(execs):
+            print("sala de guerra: outra frente esta usando o modelo local; seguindo a rota sem ele")
+            execs = sem
     if not execs or cat[execs[0]]["cli"] != "ollama":
         return execs
     mem = memoria_livre()
@@ -1542,7 +1600,9 @@ def cmd_run(a):
             texto += ("\n\n## Licoes de validacoes anteriores deste projeto (valem tambem para esta tarefa, "
                       "no que se aplicar)\n" + "\n".join(licoes) + "\n")
             print(f"licoes: {len(licoes)} do projeto anexadas a tarefa")
-        job = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
+        job = a.job_id or (time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2))
+        if not re.fullmatch(r"[\w.-]{6,80}", job) or os.path.exists(job_dir(job)):
+            sys.exit(f"--job-id invalido ou ja usado: {job}")
         os.makedirs(job_dir(job), exist_ok=True)
         wt, base, aviso = criar_worktree(os.path.normpath(repo), job)
         if aviso:
@@ -2105,9 +2165,10 @@ def cmd_jobs(a):
 
 def cmd_cota(a):
     if a.liberar:
-        est = ler_json(ESTADO, {})
-        est.get("esgotado", {}).pop(a.id, None)
-        gravar_json(ESTADO, est)
+        with trava("estado"):
+            est = ler_json(ESTADO, {})
+            est.get("esgotado", {}).pop(a.id, None)
+            gravar_json(ESTADO, est)
         print(f"{a.id} liberado")
     else:
         print(f"{a.id} esgotado ate {marcar_esgotado(a.id, a.horas)}")
@@ -2339,6 +2400,794 @@ def cmd_ganho(a):
             print(f"{label:26}{s_ant:>5}{s_atu:>11}{tag}")
 
 
+# ---------- sala de guerra (/warroom) ----------
+# Varias frentes ao mesmo tempo, cada uma num job/worktree proprio, sem uma pisar na outra:
+#   - cada frente declara a AREA (globs) em que pode criar ou alterar arquivos; frentes cujas areas se cruzam, ou
+#     que dependem de outra (`depois`), esperam a anterior ser JUNTADA, e entao partem do projeto ja com ela;
+#   - ao terminar, o vigia confere se a frente ficou na area dela e nao alterou arquivos `protegidos`;
+#   - a juntada e uma por vez: aplica, roda a verificacao no PROJETO REAL (pega o conflito de sentido entre duas
+#     frentes que passaram cada uma sozinha) e faz o commit da frente; se a verificacao falhar, desfaz;
+#   - o vigia (`sala rodar`) lanca o que esta livre e para a cada evento que precisa do orquestrador.
+# O plano e vivo: editar o .toml e rodar `sala rodar` de novo inclui frentes novas no meio da guerra.
+
+SALAS = os.path.join(CASA, "salas")
+SALA_OLHAR = 10           # segundos entre duas olhadas do vigia
+SALA_ATENCAO = ("pronta", "falhou", "duvida", "invadiu", "conflito")   # o orquestrador decide
+SALA_FIM = ("juntada", "descartada")
+SALA_ATIVA = ("rodando", "juntando")
+NOME_RE = re.compile(r"[A-Za-z0-9][\w.-]{0,59}")
+SALA_REGRAS = """
+
+---
+## Regras da sala de guerra (valem acima de qualquer outra instrucao desta tarefa)
+Outros agentes trabalham AO MESMO TEMPO neste projeto, cada um na area dele. Esta frente e `{id}` e so pode
+criar, alterar ou apagar arquivos que casam com:
+{area}
+{protegidos}Qualquer arquivo fora disso sera tratado como invasao e a frente inteira volta sem ser juntada. Se a
+tarefa realmente exigir mexer fora da area, NAO mexa: termine o que cabe na area e responda
+`ESCALAR: <qual arquivo fora da area e por que>`.
+"""
+
+
+def sala_dir(nome):
+    return os.path.join(SALAS, nome)
+
+
+def glob_re(padrao):
+    """Glob de caminho relativo ao repo: `*` nao passa de pasta, `**` passa, `pasta/` = tudo dentro dela."""
+    p = padrao.replace("\\", "/").strip().removeprefix("./")
+    if p.endswith("/"):
+        p += "**"
+    out, i = "", 0
+    while i < len(p):
+        if p.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif p.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif p[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif p[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(p[i]), i + 1
+    return re.compile(out + r"\Z", re.I if os.name == "nt" else 0)
+
+
+def casa_area(caminho, padroes):
+    c = caminho.replace("\\", "/")
+    return any(glob_re(p).match(c) for p in padroes)
+
+
+def _fixo(padrao):
+    """(parte fixa, tem_curinga). 'scripts/run/*.gd' -> ('scripts/run/', True); 'a/b.gd' -> ('a/b.gd', False)."""
+    p = padrao.replace("\\", "/").strip().removeprefix("./")
+    if p.endswith("/"):
+        return p, True
+    m = re.search(r"[*?\[]", p)
+    if not m:
+        return p, False
+    antes = p[:m.start()]
+    return (antes.rsplit("/", 1)[0] + "/") if "/" in antes else "", True
+
+
+def areas_cruzam(a, b):
+    """Duas areas podem tocar o mesmo arquivo? Conservador: na duvida, sim. Area vazia cruza com tudo."""
+    if not a or not b:
+        return True
+    low = (lambda t: t.lower()) if os.name == "nt" else (lambda t: t)
+    for x in a:
+        fx, gx = _fixo(x)
+        for y in b:
+            fy, gy = _fixo(y)
+            if not gx and not gy:
+                if low(fx) == low(fy):
+                    return True
+            elif not gx:
+                if glob_re(y).match(fx):
+                    return True
+            elif not gy:
+                if glob_re(x).match(fy):
+                    return True
+            elif low(fx).startswith(low(fy)) or low(fy).startswith(low(fx)):
+                return True
+    return False
+
+
+def _lista(v):
+    return [v] if isinstance(v, str) else list(v or [])
+
+
+def ler_plano(caminho):
+    """Le e confere o plano. Devolve (cfg, frentes, erros, avisos)."""
+    caminho = os.path.abspath(caminho)
+    try:
+        with open(caminho, "rb") as f:
+            p = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        return None, [], [f"plano ilegivel: {e}"], []
+    base = os.path.dirname(caminho)
+    erros, avisos = [], []
+    nome = str(p.get("nome") or os.path.splitext(os.path.basename(caminho))[0])
+    if not NOME_RE.fullmatch(nome):
+        erros.append(f"nome da sala invalido: {nome!r} (letras, numeros, . _ -)")
+    pasta = os.path.join(base, os.path.expanduser(p.get("dir", ".")))
+    repo = git(pasta, "rev-parse", "--show-toplevel").stdout.strip() if os.path.isdir(pasta) else ""
+    if not repo:
+        erros.append(f"dir nao e um repositorio git: {pasta}")
+    elif git(repo, "rev-parse", "--verify", "HEAD").returncode != 0:
+        erros.append("repositorio sem nenhum commit")
+    juntar = p.get("juntar", "revisar")
+    if juntar not in ("revisar", "auto"):
+        erros.append(f"juntar = {juntar!r}: use 'revisar' (voce confere cada frente) ou 'auto'")
+    cfg = {"nome": nome, "plano": caminho, "repo": os.path.normpath(repo) if repo else "",
+           "verificar": p.get("verificar"), "eu": str(p["eu"]) if p.get("eu") else None,
+           "paralelo": max(1, int(p.get("paralelo", 4))), "juntar": juntar, "commitar": bool(p.get("commitar", True)),
+           "rodape": p.get("rodape", ""), "protegidos": _lista(p.get("protegidos"))}
+    if not cfg["verificar"]:
+        avisos.append("sem 'verificar' na sala: a juntada nao confere se as frentes funcionam juntas")
+    frentes, ids = [], set()
+    for i, f in enumerate(p.get("frente", []), 1):
+        fid = str(f.get("id") or "").strip()
+        if not NOME_RE.fullmatch(fid) or len(fid) > 20:
+            erros.append(f"frente #{i}: id invalido {fid!r} (ate 20 letras, numeros, . _ -)")
+            continue
+        if fid in ids:
+            erros.append(f"frente {fid}: id repetido")
+        ids.add(fid)
+        tarefa = os.path.join(base, os.path.expanduser(f.get("tarefa") or ""))
+        if not f.get("tarefa") or not os.path.isfile(tarefa):
+            erros.append(f"frente {fid}: arquivo de tarefa nao encontrado: {f.get('tarefa')!r}")
+        area = [a.replace("\\", "/") for a in _lista(f.get("area"))]
+        if not area:
+            avisos.append(f"frente {fid}: sem 'area' -> cruza com todas e roda sozinha")
+        for a in area:
+            if a.replace("\\", "/").startswith("/") or ":" in a or ".." in a.split("/"):
+                erros.append(f"frente {fid}: area {a!r} deve ser relativa a raiz do repo, sem '..'")
+        frentes.append({"id": fid, "titulo": str(f.get("titulo") or fid), "tarefa": tarefa,
+                        "tipo": f.get("tipo", p.get("tipo", "implementar")), "exec": f.get("exec", p.get("exec", "auto")),
+                        "area": area, "depois": [str(d) for d in _lista(f.get("depois"))],
+                        "verificar": f.get("verificar", cfg["verificar"]),
+                        "timeout": int(f.get("timeout", p.get("timeout", 1800))),
+                        "tentativas": int(f.get("tentativas", p.get("tentativas", 2)))})
+    if not frentes and not erros:
+        erros.append("o plano nao tem nenhuma [[frente]]")
+    por_id = {f["id"]: f for f in frentes}
+    for f in frentes:
+        for d in f["depois"]:
+            if d not in por_id:
+                erros.append(f"frente {f['id']}: depois de {d!r}, que nao existe")
+    cor = {}
+
+    def visita(fid, trilha):
+        cor[fid] = 1
+        for d in por_id[fid]["depois"]:
+            if d in por_id and cor.get(d) == 1:
+                erros.append("dependencia circular: " + " -> ".join(trilha + [d]))
+            elif d in por_id and not cor.get(d):
+                visita(d, trilha + [d])
+        cor[fid] = 2
+    for f in frentes:
+        if not cor.get(f["id"]):
+            visita(f["id"], [f["id"]])
+    for i, f in enumerate(frentes):
+        for g in frentes[i + 1:]:
+            if f["area"] and g["area"] and areas_cruzam(f["area"], g["area"]) and f["id"] not in g["depois"]:
+                avisos.append(f"areas de {f['id']} e {g['id']} se cruzam: {g['id']} espera {f['id']} ser juntada")
+    return cfg, frentes, erros, avisos
+
+
+def motivo_espera(f, frentes, ordem):
+    """Por que a frente ainda nao pode partir (None = pode). Ordem do plano desempata quem cruza area."""
+    for d in f["depois"]:
+        g = frentes.get(d)
+        if g and g["estado"] == "descartada":
+            return f"depende de {d}, que foi descartada (tire do 'depois' ou descarte esta)"
+        if g and g["estado"] != "juntada":
+            return f"depois de {d}"
+    pos = ordem.index(f["id"])
+    for gid in ordem:
+        g = frentes[gid]
+        if gid == f["id"] or g["estado"] in SALA_FIM:
+            continue
+        if (g["estado"] != "espera" or ordem.index(gid) < pos) and areas_cruzam(f["area"], g["area"]):
+            return f"area cruza com {gid}"
+    return None
+
+
+def _sala_ler(nome):
+    return ler_json(os.path.join(sala_dir(nome), "sala.json"), None)
+
+
+def _sala_gravar(s):
+    gravar_json(os.path.join(sala_dir(s["cfg"]["nome"]), "sala.json"), s)
+
+
+def _evento(s, fid, estado, msg):
+    s.setdefault("eventos", []).append({"n": len(s["eventos"]) + 1, "id": fid, "estado": estado, "msg": msg,
+                                        "hora": time.strftime("%H:%M:%S"), "visto": False})
+
+
+def sincronizar(cfg, frentes):
+    """Junta o plano (talvez editado) ao estado salvo. Frente que ja partiu nao muda; frente nova entra."""
+    s = _sala_ler(cfg["nome"]) or {"cfg": cfg, "frentes": {}, "ordem": [], "eventos": []}
+    if s["cfg"].get("repo") and os.path.normcase(s["cfg"]["repo"]) != os.path.normcase(cfg["repo"]):
+        sys.exit(f"ja existe a sala {cfg['nome']} em outro repo ({s['cfg']['repo']}); use outro 'nome' no plano")
+    s["cfg"] = cfg
+    vistos = []
+    for f in frentes:
+        atual = s["frentes"].get(f["id"])
+        if atual is None:
+            s["frentes"][f["id"]] = {**f, "estado": "espera", "job": None, "pid": None, "obs": "", "inicio": None,
+                                     "fim": None, "exec_usado": None, "stat": "", "commit": None, "arquivos": []}
+        elif atual["estado"] == "espera":
+            atual.update(f)
+        vistos.append(f["id"])
+    for fid in list(s["frentes"]):
+        if fid not in vistos and s["frentes"][fid]["estado"] == "espera":
+            del s["frentes"][fid]  # tirada do plano antes de partir
+    s["ordem"] = vistos + [fid for fid in s["ordem"] if fid in s["frentes"] and fid not in vistos]
+    return s
+
+
+def _abrir_sala(alvo, recarregar=True):
+    """alvo = caminho do plano .toml ou nome de uma sala ja criada. Devolve o estado (com o plano relido)."""
+    if os.path.isfile(alvo):
+        plano = alvo
+    else:
+        s = _sala_ler(alvo) if NOME_RE.fullmatch(alvo) else None
+        if not s:
+            sys.exit(f"sala ou plano nao encontrado: {alvo}")
+        plano = s["cfg"]["plano"]
+        if not recarregar or not os.path.isfile(plano):
+            return s
+    cfg, frentes, erros, _ = ler_plano(plano)
+    if erros:
+        sys.exit("plano com erro:\n  " + "\n  ".join(erros))
+    with trava("sala-" + cfg["nome"], espera=120):
+        s = sincronizar(cfg, frentes)
+        _sala_gravar(s)
+    return s
+
+
+def pid_vivo(pid):
+    if not pid:
+        return False
+    if os.name == "nt":
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        codigo = ctypes.c_ulong()
+        ok = k.GetExitCodeProcess(h, ctypes.byref(codigo))
+        k.CloseHandle(h)
+        return bool(ok) and codigo.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _lancar_solto(cmd):
+    """Processo que sobrevive ao vigia: o orquestrador pode fechar o `sala rodar` e abrir outro depois."""
+    base = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=CASA)
+    if os.name != "nt":
+        return subprocess.Popen(cmd, start_new_session=True, **base).pid
+    sem_janela, grupo, fora_do_job = 0x08000000, 0x00000200, 0x01000000
+    try:
+        return subprocess.Popen(cmd, creationflags=sem_janela | grupo | fora_do_job, **base).pid
+    except OSError:  # o job object de quem chamou nao deixa sair: fica dentro dele
+        return subprocess.Popen(cmd, creationflags=sem_janela | grupo, **base).pid
+
+
+def _rota_tem_local(f, cfg):
+    try:
+        cat = catalogo()
+        execs = resolver(f["exec"], f["tipo"], cat, False, meu_nivel(cfg.get("eu"), cat))
+        return any(cat[e]["cli"] == "ollama" for e in execs)
+    except (SystemExit, Exception):
+        return False
+
+
+def lancar_frente(s, f, correcao=None):
+    """Parte a frente num processo solto. correcao = texto para `run --continuar` no mesmo job."""
+    cfg, pasta = s["cfg"], sala_dir(s["cfg"]["nome"])
+    fid = f["id"]
+    rodada = f.get("lancamentos", 0) + 1
+    f["lancamentos"] = rodada
+    if correcao is not None:
+        arq = os.path.join(pasta, f"{fid}.correcao{rodada}.md")
+        with open(arq, "w", encoding="utf-8") as fh:
+            fh.write(correcao)
+        args = ["run", "--continuar", f["job"], "--tarefa", arq]
+    else:
+        with open(f["tarefa"], encoding="utf-8") as fh:
+            texto = fh.read()
+        prot = ("e NUNCA altera nem apaga estes arquivos ja existentes (criar arquivo novo neles pode):\n"
+                + "\n".join(f"- `{p}`" for p in cfg["protegidos"]) + "\n") if cfg["protegidos"] else ""
+        texto += SALA_REGRAS.format(id=fid, area="\n".join(f"- `{a}`" for a in f["area"]) or "- (o projeto todo)",
+                                    protegidos=prot)
+        arq = os.path.join(pasta, f"{fid}.tarefa.md")
+        with open(arq, "w", encoding="utf-8") as fh:
+            fh.write(texto)
+        f["job"] = time.strftime("%Y%m%d-%H%M%S-") + re.sub(r"[^\w-]", "", fid)[:12] + "-" + secrets.token_hex(2)
+        args = ["run", "--job-id", f["job"], "--tarefa", arq, "--dir", cfg["repo"], "--tipo", f["tipo"],
+                "--exec", f["exec"], "--timeout", str(f["timeout"]), "--tentativas", str(f["tentativas"])]
+        if f.get("verificar"):
+            args += ["--verificar", f["verificar"]]
+    if cfg.get("eu"):
+        args += ["--eu", cfg["eu"]]
+    args.append("--sem-janela")  # ninguem olha janela no meio da sala; sem memoria o vigia relanca sem o local
+    _disparar(s, f, args)
+
+
+def _disparar(s, f, args):
+    """Grava o pedido e solta o processo. So uma frente por vez fica com a vez do modelo local (GPU)."""
+    pasta, fid = sala_dir(s["cfg"]["nome"]), f["id"]
+    outro_local = any(g.get("local") and g["estado"] == "rodando" for g in s["frentes"].values() if g is not f)
+    f["local"] = not outro_local and not f.get("sem_local") and _rota_tem_local(f, s["cfg"])
+    res = os.path.join(pasta, f"{fid}.res.json")
+    if os.path.exists(res):
+        os.remove(res)
+    pedido = {"args": args, "log": os.path.join(pasta, f"{fid}.log"), "res": res,
+              "env": {} if f["local"] else {"MAESTRO_SEM_LOCAL": "1"}}
+    cmd_json = os.path.join(pasta, f"{fid}.cmd.json")
+    gravar_json(cmd_json, pedido)
+    with open(pedido["log"], "a", encoding="utf-8") as fh:
+        fh.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} maestro.py {' '.join(args)}"
+                 f"{'' if f['local'] else '  (sem modelo local)'}\n")
+    f.update(estado="rodando", pid=_lancar_solto([sys.executable, os.path.abspath(__file__), "_frente", cmd_json]),
+             inicio=f.get("inicio") or time.time(), fim=None, obs="")
+
+
+def cmd_frente_interna(a):
+    """Processo solto de uma frente: roda o `run` e grava o codigo de saida (o vigia pode nem estar vivo)."""
+    c = ler_json(a.arquivo, None)
+    codigo = -1
+    try:
+        with open(c["log"], "a", encoding="utf-8") as log:
+            codigo = subprocess.run([sys.executable, os.path.abspath(__file__), *c["args"]], stdout=log,
+                                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=CASA,
+                                    env={**os.environ, "PYTHONIOENCODING": "utf-8", "MAESTRO_SEM_JANELA": "1",
+                                         **c.get("env", {})}).returncode
+    finally:
+        gravar_json(c["res"], {"codigo": codigo, "fim": time.time()})
+
+
+def conferir_area(j, f, protegidos):
+    """(arquivos tocados, fora da area, protegidos alterados) no worktree do job."""
+    wt = j["wt"]
+    t = os.path.join(wt, TAREFA)
+    if os.path.exists(t):
+        os.remove(t)
+    git(wt, "add", "-A")
+    saida = git(wt, "diff", "--cached", "--name-status", "-M", j["base"], "--", ".", *LIXO).stdout
+    git(wt, "reset", "-q")
+    tocados, fora, prot = [], [], []
+    for linha in saida.splitlines():
+        partes = linha.split("\t")
+        if len(partes) < 2:
+            continue
+        st, caminhos = partes[0][:1], partes[1:]
+        for c in caminhos:
+            tocados.append(c)
+            if f["area"] and not casa_area(c, f["area"]):
+                fora.append(c)
+        if st in "MDR" and protegidos and casa_area(caminhos[0], protegidos):
+            prot.append(caminhos[0])
+    return sorted(set(tocados)), sorted(set(fora)), sorted(set(prot))
+
+
+def _resumo_log(caminho, limite=2500):
+    try:
+        with open(caminho, encoding="utf-8", errors="replace") as fh:
+            texto = fh.read()
+    except OSError:
+        return "(sem log)"
+    trecho = texto.rsplit("\n===== ", 1)[-1]
+    i = trecho.rfind("\njob ")
+    trecho = trecho[i + 1:] if i >= 0 else trecho
+    # o 'proximo:' do run fala em juntar/descartar o job direto; na sala quem junta e a sala (proximos_passos)
+    trecho = "\n".join(l for l in trecho.splitlines() if not l.startswith("proximo: maestro.py diff"))
+    return trecho[-limite:].strip()
+
+
+def atualizar_frente(s, f):
+    """Frente rodando terminou? Classifica e registra o evento. Devolve True se mudou."""
+    pasta = sala_dir(s["cfg"]["nome"])
+    res = ler_json(os.path.join(pasta, f"{f['id']}.res.json"), None)
+    log = os.path.join(pasta, f"{f['id']}.log")
+    if res is None:
+        if pid_vivo(f.get("pid")):
+            return False
+        time.sleep(1)
+        res = ler_json(os.path.join(pasta, f"{f['id']}.res.json"), None) or {"codigo": -1, "fim": time.time()}
+    f["fim"], codigo = res["fim"], res["codigo"]
+    j = ler_json(os.path.join(job_dir(f["job"]), "job.json"), None) if f.get("job") else None
+    if codigo == 5 and not f.get("sem_local"):
+        # o modelo local nao coube na memoria (sem janela): repete o mesmo pedido seguindo a rota sem ele
+        f["sem_local"] = True
+        _disparar(s, f, ler_json(os.path.join(pasta, f"{f['id']}.cmd.json"), {})["args"])
+        f["obs"] = "modelo local sem memoria: relancada sem ele"
+        return True
+    if not j or not os.path.isdir(j.get("wt", "")):
+        f.update(estado="falhou", obs="o job nem chegou a criar o worktree")
+        _evento(s, f["id"], "falhou", _resumo_log(log))
+        return True
+    f["exec_usado"] = j.get("exec_usado")
+    f["stat"] = (mudancas(j, stat=True).strip().splitlines() or [""])[-1].strip()
+    if codigo == 0:
+        tocados, fora, prot = conferir_area(j, f, s["cfg"]["protegidos"])
+        f["arquivos"] = tocados
+        if fora or prot:
+            f["estado"] = "invadiu"
+            f["obs"] = "; ".join(filter(None, [fora and "fora da area: " + ", ".join(fora[:8]),
+                                               prot and "alterou protegidos: " + ", ".join(prot[:8])]))
+        else:
+            f["estado"], f["obs"] = "pronta", f["stat"] or "sem alteracoes"
+    elif codigo == 4:
+        f["estado"], f["obs"] = "duvida", "o executor parou com uma duvida"
+    else:
+        f["estado"] = "falhou"
+        f["obs"] = {1: "erro do executor", 2: "estourou o tempo", 3: "verificacao falhou",
+                    -1: "o processo da frente morreu"}.get(codigo, f"saida {codigo}")
+    if f["estado"] != "pronta" or s["cfg"]["juntar"] == "revisar":
+        _evento(s, f["id"], f["estado"], (f["obs"] + "\n" if f["estado"] == "invadiu" else "") + _resumo_log(log))
+    return True
+
+
+def _restaurar(repo, arquivos):
+    """Volta estes arquivos ao HEAD (os que nao existiam no HEAD sao apagados). So para arquivos que estavam limpos."""
+    if not arquivos:
+        return
+    git(repo, "reset", "-q", "--", *arquivos)
+    no_head = set(git(repo, "ls-tree", "-r", "--name-only", "HEAD", "--", *arquivos).stdout.splitlines())
+    if no_head:
+        git(repo, "checkout", "HEAD", "--", *sorted(no_head))
+    for c in arquivos:
+        if c not in no_head and os.path.isfile(os.path.join(repo, c)):
+            os.remove(os.path.join(repo, c))
+
+
+def verificar_em(pasta, cmd, timeout=600):
+    try:
+        cmdv = comando_verificar(cmd)
+        v = subprocess.run(cmdv, cwd=pasta, shell=isinstance(cmdv, str), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=timeout,
+                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+        return v.returncode == 0, v.stdout + v.stderr
+    except subprocess.TimeoutExpired:
+        return False, f"verificacao estourou {timeout} s"
+
+
+def juntar_frente(cfg, f):
+    """Aplica a frente no projeto real, verifica ali e faz o commit. (ok, mensagem). Se falha, o projeto fica
+    como estava e o worktree continua (para --continuar ou refazer)."""
+    j = ler_json(os.path.join(job_dir(f["job"]), "job.json"), None)
+    if not j or not os.path.isdir(j.get("wt", "")):
+        return False, "worktree do job nao existe mais"
+    repo = j["repo"]
+    tocados, _, _ = conferir_area(j, f, cfg["protegidos"])
+    if not tocados:
+        remover_worktree(j)
+        return True, "nada para juntar"
+    with trava("repo-" + marca(os.path.normcase(os.path.abspath(repo))), espera=3600):
+        sujos = git(repo, "status", "--porcelain", "--", *tocados).stdout.strip()
+        if sujos:
+            return False, ("estes arquivos tem mudanca nao commitada no projeto; commite ou descarte e junte de novo:\n"
+                           + sujos[:800])
+        patch = mudancas(j, binario=True)
+        caminho = os.path.join(job_dir(j["job"]), "final.patch")
+        with open(caminho, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(patch)
+        r = git(repo, "apply", "--whitespace=nowarn", caminho)
+        if r.returncode != 0:
+            r = git(repo, "apply", "--3way", "--whitespace=nowarn", caminho)
+        if r.returncode != 0:
+            _restaurar(repo, tocados)
+            return False, ("o patch nao entra no projeto atual (outra frente mudou o mesmo trecho). Use 'sala refazer' "
+                           "para rodar de novo a partir do projeto atual.\n" + r.stderr.strip()[:800])
+        # na juntada vale a verificacao da sala (a completa); a da frente pode ser so um filtro dos testes dela
+        cmd_v = cfg.get("verificar") or f.get("verificar")
+        if cmd_v:
+            ok, saida = verificar_em(repo, cmd_v)
+            if not ok:
+                arq = os.path.join(sala_dir(cfg["nome"]), f"{f['id']}.juntada.txt")
+                with open(arq, "w", encoding="utf-8") as fh:
+                    fh.write(saida)
+                _restaurar(repo, tocados)
+                curto, _ = enxugar(saida)
+                return False, (f"passou no worktree, mas a verificacao FALHOU com ela junto das outras frentes no "
+                               f"projeto real (desfeito). Saida completa: {arq}\n{curto}")
+        commit = None
+        if cfg["commitar"]:
+            git(repo, "add", "-A", "--", *tocados)
+            msg = (f"{f['titulo']}\n\nSala de guerra {cfg['nome']}, frente {f['id']} (job {j['job']}, executor "
+                   f"{j.get('exec_usado')}).\n" + (f"\n{cfg['rodape'].strip()}\n" if cfg.get("rodape") else ""))
+            c = git(repo, "commit", "-q", "-m", msg, "--", *tocados)
+            if c.returncode != 0:
+                _restaurar(repo, tocados)
+                return False, "o commit foi recusado (hook?); desfeito:\n" + (c.stdout + c.stderr).strip()[-1200:]
+            commit = git(repo, "rev-parse", "--short", "HEAD").stdout.strip()
+    remover_worktree(j)
+    registrar({"evento": "juntar", "job": j["job"], "exec": j.get("exec_usado"), "tipo": j.get("tipo"),
+               "rodadas": j.get("rodada"), "sala": cfg["nome"]})
+    return True, (f"commit {commit}" if commit else "aplicada sem commit")
+
+
+def _mudar(nome, fn):
+    """Le, muda e grava a sala sob trava (o vigia e os comandos do orquestrador mexem no mesmo arquivo)."""
+    with trava("sala-" + nome, espera=120):
+        s = _sala_ler(nome)
+        if not s:
+            sys.exit(f"sala nao encontrada: {nome}")
+        r = fn(s)
+        _sala_gravar(s)
+    return r
+
+
+def _juntar_e_registrar(nome, fid):
+    def preparar(s):
+        f = s["frentes"][fid]
+        f["estado_antes"], f["estado"] = f["estado"], "juntando"
+        return dict(f), s["cfg"]
+    f, cfg = _mudar(nome, preparar)
+    try:
+        ok, msg = juntar_frente(cfg, f)
+    except BaseException as e:
+        ok, msg = False, f"erro na juntada: {e!r}"
+
+    def concluir(s):
+        g = s["frentes"][fid]
+        if ok:
+            g.update(estado="juntada", commit=msg.removeprefix("commit "), obs=msg, fim=g.get("fim") or time.time())
+        else:
+            g.update(estado="conflito", obs=msg.splitlines()[0][:200])
+            _evento(s, fid, "conflito", msg)
+    _mudar(nome, concluir)
+    return ok, msg
+
+
+def _dur(f):
+    if not f.get("inicio"):
+        return "-"
+    seg = int((f.get("fim") or time.time()) - f["inicio"])
+    return f"{seg // 60}m{seg % 60:02d}s" if seg < 3600 else f"{seg // 3600}h{seg % 3600 // 60:02d}m"
+
+
+def quadro(s):
+    fr = s["frentes"]
+    cont = collections.Counter(f["estado"] for f in fr.values())
+    cab = (f"sala {s['cfg']['nome']} | {len(fr)} frentes | " + ", ".join(f"{n} {e}" for e, n in cont.most_common())
+           + f" | paralelo {s['cfg']['paralelo']} | juntar: {s['cfg']['juntar']}")
+    linhas = [cab, f"{'id':<12} {'estado':<10} {'executor':<20} {'tempo':>7}  {'job':<34} obs"]
+    for fid in s["ordem"]:
+        f = fr[fid]
+        linhas.append(f"{fid:<12} {f['estado']:<10} {(f.get('exec_usado') or '-'):<20} {_dur(f):>7}  "
+                      f"{(f.get('job') or '-'):<34} {f.get('obs') or ''}"[:220])
+    return "\n".join(linhas)
+
+
+def _passo_vigia(s):
+    """Uma olhada: atualiza quem terminou, lanca o que ficou livre. Devolve as frentes prontas a juntar (auto)."""
+    for f in s["frentes"].values():
+        if f["estado"] == "rodando":
+            atualizar_frente(s, f)
+    vagas = s["cfg"]["paralelo"] - sum(f["estado"] in SALA_ATIVA for f in s["frentes"].values())
+    for fid in s["ordem"]:
+        f = s["frentes"][fid]
+        if f["estado"] != "espera":
+            continue
+        motivo = motivo_espera(f, s["frentes"], s["ordem"])
+        if motivo or vagas <= 0:
+            f["obs"] = motivo or "sem vaga (paralelo)"
+            continue
+        try:
+            lancar_frente(s, f)
+            vagas -= 1
+        except Exception as e:
+            f.update(estado="falhou", obs=f"nao lancou: {e!r}"[:200])
+            _evento(s, fid, "falhou", f"nao lancou: {e!r}")
+    if s["cfg"]["juntar"] == "auto":
+        return [fid for fid in s["ordem"] if s["frentes"][fid]["estado"] == "pronta"]
+    return []
+
+
+def cmd_sala(a):
+    {"checar": sala_checar, "rodar": sala_rodar, "status": sala_status, "juntar": sala_juntar,
+     "retomar": sala_retomar, "refazer": sala_refazer, "descartar": sala_descartar, "parar": sala_parar}[a.acao](a)
+
+
+def sala_checar(a):
+    plano = a.alvo if os.path.isfile(a.alvo) else (_sala_ler(a.alvo) or {}).get("cfg", {}).get("plano", a.alvo)
+    cfg, frentes, erros, avisos = ler_plano(plano)
+    for e in erros:
+        print("ERRO:", e)
+    for av in avisos:
+        print("AVISO:", av)
+    if erros:
+        sys.exit(1)
+    # simulacao: cada onda parte, termina e e juntada antes da proxima
+    sim = {f["id"]: {**f, "estado": "espera"} for f in frentes}
+    ordem, onda = [f["id"] for f in frentes], 0
+    print(f"sala {cfg['nome']} | repo {cfg['repo']} | paralelo {cfg['paralelo']} | juntar: {cfg['juntar']}"
+          f" | verificar: {cfg['verificar'] or '-'}")
+    while any(f["estado"] == "espera" for f in sim.values()):
+        onda += 1
+        livres = []
+        for fid in ordem:
+            if sim[fid]["estado"] == "espera" and len(livres) < cfg["paralelo"] and not motivo_espera(sim[fid], sim, ordem):
+                sim[fid]["estado"] = "rodando"
+                livres.append(fid)
+        if not livres:
+            print("travado: " + ", ".join(f"{fid} ({motivo_espera(sim[fid], sim, ordem)})" for fid in ordem
+                                         if sim[fid]["estado"] == "espera"))
+            sys.exit(1)
+        print(f"onda {onda}: " + ", ".join(f"{fid} [{', '.join(sim[fid]['area']) or 'tudo'}]" for fid in livres))
+        for fid in livres:
+            sim[fid]["estado"] = "juntada"
+    print("plano OK. Rode: maestro.py sala rodar " + cfg["plano"])
+
+
+def sala_rodar(a):
+    nome = _abrir_sala(a.alvo)["cfg"]["nome"]
+    print(f"vigia da sala {nome}: olhando a cada {SALA_OLHAR}s (para no proximo evento"
+          + (" ou quando nada mais andar)" if a.ate == "evento" else ", so quando nada mais andar)"), flush=True)
+    while True:
+        prontas = _mudar(nome, _passo_vigia)
+        for fid in prontas:
+            ok, msg = _juntar_e_registrar(nome, fid)
+            print(f"juntada automatica de {fid}: {'OK' if ok else 'CONFLITO'} - {msg.splitlines()[0]}", flush=True)
+        s = _sala_ler(nome)
+        novos = [e for e in s.get("eventos", []) if not e["visto"]]
+        ativas = [f for f in s["frentes"].values() if f["estado"] in SALA_ATIVA]
+        espera_livre = [f for f in s["frentes"].values() if f["estado"] == "espera"
+                        and not motivo_espera(f, s["frentes"], s["ordem"])]
+        parado = not ativas and not espera_livre and not prontas
+        if (novos and a.ate == "evento") or parado:
+            def marcar(s2):
+                for e in s2.get("eventos", []):
+                    e["visto"] = True
+            _mudar(nome, marcar)
+            for e in novos:
+                print(f"\n=== EVENTO {e['n']} {e['hora']} | frente {e['id']}: {e['estado'].upper()}")
+                print(e["msg"])
+            print("\n" + quadro(_sala_ler(nome)))
+            print("\n" + proximos_passos(_sala_ler(nome), parado))
+            return
+        time.sleep(SALA_OLHAR)
+
+
+def proximos_passos(s, parado):
+    nome, out = s["cfg"]["nome"], []
+    M = "maestro.py sala"
+    for fid in s["ordem"]:
+        f = s["frentes"][fid]
+        e = f["estado"]
+        if e == "pronta":
+            out.append(f"{fid}: confira com 'maestro.py diff {f['job']} --stat' e junte: {M} juntar {nome} {fid}")
+        elif e in ("falhou", "duvida"):
+            out.append(f"{fid}: {M} retomar {nome} {fid} \"correcao ou decisao\" | {M} refazer {nome} {fid} | "
+                       f"{M} descartar {nome} {fid}")
+        elif e == "invadiu":
+            out.append(f"{fid}: confira; {M} retomar {nome} {fid} \"desfaca X\" | {M} juntar {nome} {fid} --forcar")
+        elif e == "conflito":
+            out.append(f"{fid}: {M} refazer {nome} {fid} (roda de novo sobre o projeto atual) | {M} retomar ... | "
+                       f"depois de resolver: {M} juntar {nome} {fid}")
+    ativas = sum(f["estado"] in SALA_ATIVA for f in s["frentes"].values())
+    if ativas:
+        out.append(f"{ativas} frente(s) ainda rodando: rode de novo '{M} rodar {nome}' (em background) para o proximo evento")
+    elif parado and all(f["estado"] in SALA_FIM for f in s["frentes"].values()):
+        out.append("todas as frentes terminaram.")
+    elif parado:
+        out.append(f"nada anda sozinho: resolva as frentes acima e rode '{M} rodar {nome}'")
+    return "proximo:\n  " + "\n  ".join(out) if out else ""
+
+
+def sala_status(a):
+    s = _abrir_sala(a.alvo, recarregar=False)
+    with trava("sala-" + s["cfg"]["nome"], espera=120):
+        s = _sala_ler(s["cfg"]["nome"]) or s
+        for f in s["frentes"].values():
+            if f["estado"] == "rodando":
+                atualizar_frente(s, f)
+        _sala_gravar(s)
+    print(quadro(s))
+    pend = [e for e in s.get("eventos", []) if not e["visto"]]
+    if pend:
+        print(f"\n{len(pend)} evento(s) ainda nao lidos: 'maestro.py sala rodar {s['cfg']['nome']}' mostra")
+
+
+def _frente(s, fid, estados):
+    f = s["frentes"].get(fid)
+    if not f:
+        sys.exit(f"frente {fid} nao existe na sala {s['cfg']['nome']}")
+    if f["estado"] not in estados:
+        sys.exit(f"frente {fid} esta '{f['estado']}'; esta acao vale para: {', '.join(estados)}")
+    return f
+
+
+def sala_juntar(a):
+    nome = _abrir_sala(a.alvo, recarregar=False)["cfg"]["nome"]
+    estados = ("pronta", "conflito") + (("invadiu", "falhou", "duvida", "juntando") if a.forcar else ())
+    _mudar(nome, lambda s: _frente(s, a.frente, estados))
+    ok, msg = _juntar_e_registrar(nome, a.frente)
+    print(("JUNTADA: " if ok else "NAO JUNTOU: ") + msg)
+    if ok:
+        print(f"rode 'maestro.py sala rodar {nome}' (em background) para lancar o que dependia dela")
+    sys.exit(0 if ok else 3)
+
+
+def sala_retomar(a):
+    nome = _abrir_sala(a.alvo, recarregar=False)["cfg"]["nome"]
+    texto = a.texto or (open(a.tarefa, encoding="utf-8").read() if a.tarefa else None)
+    if not texto:
+        sys.exit("informe a correcao (texto ou --tarefa)")
+
+    def fazer(s):
+        f = _frente(s, a.frente, ("falhou", "duvida", "invadiu", "conflito", "pronta"))
+        if not f.get("job") or not os.path.isdir(os.path.join(job_dir(f["job"]))):
+            sys.exit("a frente nao tem job para continuar; use 'sala refazer'")
+        lancar_frente(s, f, correcao=texto)
+    _mudar(nome, fazer)
+    print(f"frente {a.frente} retomada no mesmo job. Rode 'maestro.py sala rodar {nome}' (em background)")
+
+
+def sala_refazer(a):
+    nome = _abrir_sala(a.alvo, recarregar=False)["cfg"]["nome"]
+
+    def fazer(s):
+        f = _frente(s, a.frente, ("falhou", "duvida", "invadiu", "conflito", "pronta"))
+        j = ler_json(os.path.join(job_dir(f["job"]), "job.json"), None) if f.get("job") else None
+        if j and os.path.isdir(j["wt"]):
+            remover_worktree(j)
+        f.update(estado="espera", job=None, pid=None, obs="refazer: parte de novo do projeto atual", inicio=None, fim=None)
+    _mudar(nome, fazer)
+    print(f"frente {a.frente} volta para a fila. Rode 'maestro.py sala rodar {nome}' (em background)")
+
+
+def sala_descartar(a):
+    nome = _abrir_sala(a.alvo, recarregar=False)["cfg"]["nome"]
+
+    def fazer(s):
+        f = _frente(s, a.frente, ("espera", "falhou", "duvida", "invadiu", "conflito", "pronta"))
+        j = ler_json(os.path.join(job_dir(f["job"]), "job.json"), None) if f.get("job") else None
+        if j and os.path.isdir(j["wt"]):
+            remover_worktree(j)
+        f.update(estado="descartada", obs="descartada pelo orquestrador")
+        registrar({"evento": "descartar", "job": f.get("job"), "exec": f.get("exec_usado"), "tipo": f["tipo"],
+                   "sala": nome})
+    _mudar(nome, fazer)
+    print(f"frente {a.frente} descartada")
+
+
+def sala_parar(a):
+    nome = _abrir_sala(a.alvo, recarregar=False)["cfg"]["nome"]
+
+    def fazer(s):
+        alvos = [s["frentes"][a.frente]] if a.frente else list(s["frentes"].values())
+        paradas = []
+        for f in alvos:
+            if f["estado"] != "rodando":
+                continue
+            if pid_vivo(f.get("pid")):
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/T", "/F", "/PID", str(f["pid"])], capture_output=True)
+                else:
+                    import signal
+                    try:
+                        os.killpg(int(f["pid"]), signal.SIGTERM)
+                    except OSError:
+                        pass
+            f.update(estado="falhou", obs="parada pelo orquestrador", fim=time.time())
+            paradas.append(f["id"])
+        return paradas
+    print("paradas: " + (", ".join(_mudar(nome, fazer)) or "nenhuma rodando"))
+
+
 def main():
     p = argparse.ArgumentParser(description="maestro: delegacao entre modelos")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -2365,6 +3214,7 @@ def main():
     r.add_argument("--orcamento", type=int, default=0, help="tokens do executor no job; atingido, a correcao automatica para (0 = sem limite)")
     r.add_argument("--pular-local", action="store_true", help="modelo local sem memoria livre: pula para o proximo da rota sem perguntar")
     r.add_argument("--sem-janela", action="store_true", help="modelo local sem memoria livre: em vez da janela, para com saida 5 (o orquestrador pergunta)")
+    r.add_argument("--job-id", help=argparse.SUPPRESS)  # a sala de guerra escolhe o id para achar o job depois
     rc = sub.add_parser("recursos", help="RAM/VRAM livres comportam os modelos ollama? lista apps que liberariam memoria")
     rc.add_argument("--exec", help="um executor ollama do catalogo (padrao: todos)")
     lb = sub.add_parser("liberar", help="fecha apps para abrir memoria; SO com autorizacao do usuario")
@@ -2419,13 +3269,40 @@ def main():
     g = sub.add_parser("ganho", help="tokens processados pelos executores, o que voltou e onde se perdeu")
     g.add_argument("--dias", type=float, default=30, help="0 = todo o historico")
     g.add_argument("--comparar", action="store_true", help="compara o periodo com o periodo anterior de mesmo tamanho")
+    fi = sub.add_parser("_frente", help=argparse.SUPPRESS)  # processo solto de uma frente da sala de guerra
+    fi.add_argument("arquivo")
+    sa = sub.add_parser("sala", help="sala de guerra: varias frentes em paralelo, cada uma na sua area, juntadas uma por vez")
+    ss = sa.add_subparsers(dest="acao", required=True)
+    for acao, ajuda in (("checar", "confere o plano e mostra as ondas, sem lancar nada"),
+                        ("rodar", "lanca o que esta livre e espera o proximo evento (rode em background)"),
+                        ("status", "quadro das frentes"),
+                        ("juntar", "aplica a frente no projeto, verifica ali e faz o commit"),
+                        ("retomar", "continua o job da frente com uma correcao ou decisao"),
+                        ("refazer", "descarta o job e poe a frente de novo na fila (parte do projeto atual)"),
+                        ("descartar", "desiste da frente"),
+                        ("parar", "mata a frente (ou todas) que esta rodando")):
+        x = ss.add_parser(acao, help=ajuda)
+        x.add_argument("alvo", help="plano .toml ou nome da sala")
+        if acao in ("juntar", "retomar", "refazer", "descartar"):
+            x.add_argument("frente")
+        if acao == "parar":
+            x.add_argument("frente", nargs="?")
+        if acao == "rodar":
+            x.add_argument("--ate", choices=["evento", "fim"], default="evento",
+                           help="evento: volta a cada frente que precisa de voce; fim: so quando nada mais andar")
+        if acao == "juntar":
+            x.add_argument("--forcar", action="store_true", help="junta mesmo invadida/falhou (voce conferiu)")
+        if acao == "retomar":
+            x.add_argument("texto", nargs="?")
+            x.add_argument("--tarefa")
     a = p.parse_args()
-    if a.cmd in ("run", "consultar", "validar", "liberar") and profundidade() >= 1:
+    if a.cmd in ("run", "consultar", "validar", "liberar", "sala") and profundidade() >= 1:
         sys.exit("voce foi lancado pelo maestro (MAESTRO_EU definido): executor nao delega nem consulta. "
                  "Faca a tarefa; se faltar uma decisao, responda ESCALAR: <pergunta>")
     {"catalogo": cmd_catalogo, "run": cmd_run, "consultar": cmd_consultar, "validar": cmd_validar, "licoes": cmd_licoes, "rota": cmd_rota, "diff": cmd_diff, "juntar": cmd_juntar, "descartar": cmd_descartar,
      "jobs": cmd_jobs, "cota": cmd_cota, "sugerir": cmd_sugerir, "ganho": cmd_ganho,
-     "recursos": cmd_recursos, "liberar": cmd_liberar, "reabrir": cmd_reabrir}[a.cmd](a)
+     "recursos": cmd_recursos, "liberar": cmd_liberar, "reabrir": cmd_reabrir, "sala": cmd_sala,
+     "_frente": cmd_frente_interna}[a.cmd](a)
 
 
 if __name__ == "__main__":
